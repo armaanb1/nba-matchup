@@ -8,6 +8,7 @@ Four interaction modes:
   3. Defensive Similarity  — find defenders with the most similar matchup profiles
   4. LLM Scouting Report  — Anthropic-powered narrative scouting reports
 """
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -489,6 +490,43 @@ with tab1:
 # ===========================================================================
 # TAB 2 — Player Profile
 # ===========================================================================
+
+# Stat field mapping: display name -> (Player attribute, lower_is_better)
+_PG_STAT_FIELDS = {
+    "PPG": ("ppg", False), "RPG": ("rpg", False), "APG": ("apg", False),
+    "SPG": ("spg", False), "BPG": ("bpg", False), "TOV": ("tov", True),
+    "MPG": ("mpg", False), "FG%": ("fg_pct", False), "3P%": ("fg3_pct", False),
+    "FT%": ("ft_pct", False), "TS%": ("ts_pct", False),
+}
+_ADV_STAT_FIELDS = {
+    "Off Rating": ("off_rating", False), "Def Rating": ("def_rating", True),
+    "Net Rating": ("net_rating", False), "USG%": ("usg_pct", False),
+    "PIE": ("pie", False), "AST%": ("ast_pct", False),
+}
+
+def _pct_label(value, all_values, lower_is_better=False):
+    """Return 'XXth' percentile string for value among all_values."""
+    vals = [v for v in all_values if v is not None]
+    if not vals or value is None:
+        return "—"
+    pct = float(np.mean(np.array(vals) <= value)) * 100
+    if lower_is_better:
+        pct = 100 - pct
+    n = round(pct)
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+def _build_stat_df(player, stat_fields, all_players):
+    """Build a stat dataframe with Value and Pct columns."""
+    rows = []
+    for label, (field, lower) in stat_fields.items():
+        val = getattr(player, field)
+        if val is None:
+            continue
+        all_vals = [getattr(p, field) for p in all_players]
+        fmt = f"{val:.1%}" if "pct" in field or field == "usg_pct" or field == "ast_pct" else f"{val:.1f}"
+        rows.append({"Stat": label, "Value": fmt, "Pct": _pct_label(val, all_vals, lower)})
+    return pd.DataFrame(rows)
 with tab2:
     st.markdown('<div class="section-header">Player Profile</div>', unsafe_allow_html=True)
     st.markdown("Explore a player's full matchup neighborhood, stats, and graph centrality.")
@@ -534,27 +572,25 @@ with tab2:
 
         with stats_col:
             st.markdown('<h4 style="color:#F0A500; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.08em;">Per-Game Stats</h4>', unsafe_allow_html=True)
-            pg = player.per_game_dict()
-            pg_df = pd.DataFrame(list(pg.items()), columns=["Stat", "Value"])
-            pg_df = pg_df[pg_df["Value"] != "—"]
-            st.dataframe(pg_df, hide_index=True, use_container_width=True, height=310)
+            all_players = list(graph.players.values())
+            pg_df = _build_stat_df(player, _PG_STAT_FIELDS, all_players)
+            if not pg_df.empty:
+                st.dataframe(pg_df, hide_index=True, use_container_width=True, height=310)
 
             if any(v is not None for v in [player.ppg, player.rpg, player.apg, player.spg, player.bpg]):
                 st.plotly_chart(plot_player_stats_bar(player), use_container_width=True)
 
         with adv_col:
             st.markdown('<h4 style="color:#F0A500; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.08em;">Advanced Stats</h4>', unsafe_allow_html=True)
-            adv = player.advanced_dict()
             if st.session_state.enriched:
-                adv_df = pd.DataFrame(list(adv.items()), columns=["Stat", "Value"])
-                adv_df_filtered = adv_df[adv_df["Value"] != "—"]
-                if adv_df_filtered.empty:
+                adv_df = _build_stat_df(player, _ADV_STAT_FIELDS, all_players)
+                if adv_df.empty:
                     st.markdown(
                         '<div class="info-box">No advanced stats available for this player.</div>',
                         unsafe_allow_html=True,
                     )
                 else:
-                    st.dataframe(adv_df_filtered, hide_index=True, use_container_width=True, height=200)
+                    st.dataframe(adv_df, hide_index=True, use_container_width=True, height=200)
             else:
                 st.markdown(
                     '<div class="info-box">Advanced stats not yet loaded.<br>'
