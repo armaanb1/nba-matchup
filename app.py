@@ -255,10 +255,11 @@ with st.sidebar:
     st.markdown("---")
 
     load_btn = st.button("⬇ Load Data", use_container_width=True, type="primary")
-    enrich_btn = st.button("🔬 Enrich Data", use_container_width=True,
+    enrich_btn = st.button("🔄 Refresh Data", use_container_width=True,
                            type="primary",
-                           help="Pull bio + BR advanced stats for all players (~slow)",
+                           help="Pull latest bio + advanced stats for all players (includes playoff data)",
                            disabled=not st.session_state.data_loaded)
+    st.caption("Baseline data: April 16, 2026")
 
     # Load matchup data
     if load_btn:
@@ -279,15 +280,15 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Load failed: {e}")
 
-    # Enrich player nodes
+    # Refresh player data
     if enrich_btn and st.session_state.graph:
-        prog_bar = st.progress(0, text="Enriching players…")
+        prog_bar = st.progress(0, text="Refreshing players…")
         total = len(st.session_state.graph.players)
 
         def _prog(i, tot, name):
-            prog_bar.progress(i / tot, text=f"Enriching {name}… ({i}/{tot})")
+            prog_bar.progress(i / tot, text=f"Refreshing {name}… ({i}/{tot})")
 
-        with st.spinner("Fetching bio + BR stats for all players…"):
+        with st.spinner("Fetching latest bio + stats for all players…"):
             try:
                 enrich_graph(st.session_state.graph,
                              season=st.session_state.season,
@@ -295,10 +296,10 @@ with st.sidebar:
                 st.session_state.enriched = True
                 graph = st.session_state.graph
                 prog_bar.empty()
-                st.success("Player data enriched!")
+                st.success("Player data refreshed!")
             except Exception as e:
                 prog_bar.empty()
-                st.error(f"Enrichment error: {e}")
+                st.error(f"Refresh error: {e}")
 
     # Graph summary in sidebar
     if st.session_state.data_loaded and st.session_state.graph:
@@ -594,7 +595,7 @@ with tab2:
             else:
                 st.markdown(
                     '<div class="info-box">Advanced stats not yet loaded.<br>'
-                    'Click <b>Enrich</b> in the sidebar.</div>',
+                    'Click <b>Refresh Data</b> in the sidebar.</div>',
                     unsafe_allow_html=True,
                 )
 
