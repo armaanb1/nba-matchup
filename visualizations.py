@@ -311,72 +311,71 @@ def plot_network_neighborhood(
 # 4. Defensive Similarity Radar (Mode 3)
 # ---------------------------------------------------------------------------
 
-def plot_similarity_radar(
+def plot_similarity_comparison(
     target: Player,
     similar_list: List[Dict],
     graph_obj: MatchupGraph,
     top_k: int = 3,
-) -> go.Figure:
+) -> tuple:
     """
-    Radar chart comparing the target defender to their top-k similar defenders
-    across shared stat dimensions.
+    Returns (table_df, bar_fig) comparing target defender to top-k similar defenders.
+    Table shows raw stats side by side; bar chart groups by stat for easy comparison.
     """
-    stat_labels = ["PPG allowed\n(avg PPP × 10)", "Matchups", "DEPM", "BPG", "SPG"]
+    stats_config = [
+        ("PPP Allowed", lambda p: round((p.avg_ppp_def or 0), 3)),
+        ("Matchups",    lambda p: p.def_matchup_count),
+        ("DEPM",        lambda p: round(getattr(p, "epm_def", None) or 0, 2)),
+        ("BPG",         lambda p: round(p.bpg or 0, 1)),
+        ("SPG",         lambda p: round(p.spg or 0, 1)),
+        ("Def Rating",  lambda p: round(p.def_rating or 0, 1)),
+    ]
 
-    def _get_vals(player: Player) -> List[float]:
-        ppp = (player.avg_ppp_def or 0) * 10
-        matchups = min(player.def_matchup_count, 50)
-        depm = (getattr(player, 'epm_def', None) or 0) + 5  # shift to positive range
-        bpg = player.bpg or 0
-        spg = player.spg or 0
-        return [ppp, matchups / 5, depm, bpg * 5, spg * 10]
+    players = [target]
+    labels = [target.name]
+    for sim in similar_list[:top_k]:
+        other = graph_obj.players.get(sim["defender_id"])
+        if other:
+            players.append(other)
+            labels.append(f"{other.name} ({sim['combined_score']:.2f})")
 
-    categories = ["PPP Allowed", "Matchup Load", "DEPM", "Blocks", "Steals"]
-    theta = categories + [categories[0]]
+    # Build comparison table
+    rows = {"Stat": [s[0] for s in stats_config]}
+    for p, label in zip(players, labels):
+        rows[label] = [s[1](p) for s in stats_config]
+    import pandas as pd
+    table_df = pd.DataFrame(rows)
 
+    # Build grouped bar chart
     colors = [GOLD, RED, NAVY, GREEN, "#A855F7"]
     fig = go.Figure()
+    stat_names = [s[0] for s in stats_config]
 
-    # Target
-    vals = _get_vals(target)
-    vals_closed = vals + [vals[0]]
-    fig.add_trace(go.Scatterpolar(
-        r=vals_closed, theta=theta,
-        fill="toself", fillcolor=f"rgba(240,165,0,0.15)",
-        line=dict(color=GOLD, width=2.5),
-        name=target.name,
-    ))
-
-    # Similar defenders
-    for i, sim in enumerate(similar_list[:top_k]):
-        other = graph_obj.players.get(sim["defender_id"])
-        if not other:
-            continue
-        vals2 = _get_vals(other)
-        vals2_closed = vals2 + [vals2[0]]
-        clr = colors[i + 1]
-        fig.add_trace(go.Scatterpolar(
-            r=vals2_closed, theta=theta,
-            fill="toself", fillcolor=f"rgba({_hex_to_rgb(clr)},0.1)",
-            line=dict(color=clr, width=2),
-            name=f"{other.name} ({sim['combined_score']:.2f})",
+    for idx, (p, label) in enumerate(zip(players, labels)):
+        vals = [s[1](p) for s in stats_config]
+        fig.add_trace(go.Bar(
+            name=label,
+            x=stat_names,
+            y=vals,
+            marker_color=colors[idx % len(colors)],
+            text=[str(v) for v in vals],
+            textposition="outside",
+            textfont=dict(size=10, color=FONT_COLOR),
         ))
 
     fig.update_layout(
-        polar=dict(
-            bgcolor=CARD_BG,
-            radialaxis=dict(visible=True, range=[0, 12], gridcolor="#2A3550",
-                            color="#6B7280", tickfont=dict(size=9)),
-            angularaxis=dict(gridcolor="#2A3550", color=FONT_COLOR),
-        ),
+        barmode="group",
+        bargap=0.2,
+        bargroupgap=0.05,
+        xaxis=dict(tickfont=dict(color=FONT_COLOR), gridcolor="#2A3550"),
+        yaxis=dict(tickfont=dict(color=FONT_COLOR), gridcolor="#2A3550", title="Value"),
         legend=dict(bgcolor=CARD_BG, bordercolor="#374151", borderwidth=1,
                     font=dict(color=FONT_COLOR)),
-        height=420,
+        height=380,
         title=dict(text=f"Defensive Profile — {target.name} vs Similar Defenders",
                    font=dict(size=14, color=FONT_COLOR)),
         **LAYOUT_DEFAULTS,
     )
-    return fig
+    return table_df, fig
 
 
 def _hex_to_rgb(hex_color: str) -> str:

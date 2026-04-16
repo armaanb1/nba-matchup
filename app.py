@@ -35,7 +35,7 @@ from visualizations import (
     plot_network_neighborhood,
     plot_player_stats_bar,
     plot_ppp_heatmap,
-    plot_similarity_radar,
+    plot_similarity_comparison,
     plot_similarity_scores,
     plot_team_comparison_bars,
     plot_team_radar,
@@ -742,12 +742,12 @@ with tab3:
                     plot_similarity_scores(similar, def_sel3),
                     use_container_width=True,
                 )
-            with ch2:
-                if def_player:
-                    st.plotly_chart(
-                        plot_similarity_radar(def_player, similar, graph, top_k=3),
-                        use_container_width=True,
-                    )
+
+            if def_player:
+                table_df, bar_fig = plot_similarity_comparison(def_player, similar, graph, top_k=3)
+                st.markdown("**Defensive Stat Comparison**")
+                st.dataframe(table_df, hide_index=True, use_container_width=True)
+                st.plotly_chart(bar_fig, use_container_width=True)
 
             st.markdown("---")
             st.markdown('<div class="section-header">Similarity Rankings</div>',
