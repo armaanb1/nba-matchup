@@ -536,10 +536,10 @@ def _build_stat_df(player, stat_fields, all_players):
     """Build a stat dataframe with Value and Pct columns."""
     rows = []
     for label, (field, lower) in stat_fields.items():
-        val = getattr(player, field)
+        val = getattr(player, field, None)
         if val is None:
             continue
-        all_vals = [getattr(p, field) for p in all_players]
+        all_vals = [getattr(p, field, None) for p in all_players]
         fmt = f"{val:.1%}" if "pct" in field or field == "usg_pct" or field == "ast_pct" else f"{val:.1f}"
         rows.append({"Stat": label, "Value": fmt, "Pct": _pct_label(val, all_vals, lower)})
     return pd.DataFrame(rows)
