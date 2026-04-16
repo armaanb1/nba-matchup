@@ -316,18 +316,22 @@ def plot_similarity_comparison(
     similar_list: List[Dict],
     graph_obj: MatchupGraph,
     top_k: int = 3,
-) -> tuple:
+) -> "pd.DataFrame":
     """
-    Returns (table_df, bar_fig) comparing target defender to top-k similar defenders.
-    Table shows raw stats side by side; bar chart groups by stat for easy comparison.
+    Returns a color-coded DataFrame comparing target defender to top-k similar defenders.
+    Green = better than target, red = worse. lower_is_better stats are inverted.
     """
+    import pandas as pd
+
+    # (label, getter, lower_is_better)
     stats_config = [
-        ("PPP Allowed", lambda p: round((p.avg_ppp_def or 0), 3)),
-        ("Matchups",    lambda p: p.def_matchup_count),
-        ("DEPM",        lambda p: round(getattr(p, "epm_def", None) or 0, 2)),
-        ("BPG",         lambda p: round(p.bpg or 0, 1)),
-        ("SPG",         lambda p: round(p.spg or 0, 1)),
-        ("Def Rating",  lambda p: round(p.def_rating or 0, 1)),
+        ("PPP Allowed", lambda p: round((p.avg_ppp_def or 0), 3),  True),
+        ("Matchups",    lambda p: p.def_matchup_count,              False),
+        ("DEPM",        lambda p: round(getattr(p, "epm_def", None) or 0, 2), False),
+        ("BPG",         lambda p: round(p.bpg or 0, 1),            False),
+        ("SPG",         lambda p: round(p.spg or 0, 1),            False),
+        ("BLK/100",     lambda p: round(getattr(p, "p_blk_100", None) or 0, 1), False),
+        ("STL/100",     lambda p: round(getattr(p, "p_stl_100", None) or 0, 1), False),
     ]
 
     players = [target]
@@ -338,44 +342,32 @@ def plot_similarity_comparison(
             players.append(other)
             labels.append(f"{other.name} ({sim['combined_score']:.2f})")
 
-    # Build comparison table
-    rows = {"Stat": [s[0] for s in stats_config]}
-    for p, label in zip(players, labels):
-        rows[label] = [s[1](p) for s in stats_config]
-    import pandas as pd
-    table_df = pd.DataFrame(rows)
-
-    # Build grouped bar chart
-    colors = [GOLD, RED, NAVY, GREEN, "#A855F7"]
-    fig = go.Figure()
     stat_names = [s[0] for s in stats_config]
+    data = {}
+    for p, label in zip(players, labels):
+        data[label] = [s[1](p) for s in stats_config]
 
-    for idx, (p, label) in enumerate(zip(players, labels)):
-        vals = [s[1](p) for s in stats_config]
-        fig.add_trace(go.Bar(
-            name=label,
-            x=stat_names,
-            y=vals,
-            marker_color=colors[idx % len(colors)],
-            text=[str(v) for v in vals],
-            textposition="outside",
-            textfont=dict(size=10, color=FONT_COLOR),
-        ))
+    df = pd.DataFrame(data, index=stat_names)
 
-    fig.update_layout(
-        barmode="group",
-        bargap=0.2,
-        bargroupgap=0.05,
-        xaxis=dict(tickfont=dict(color=FONT_COLOR), gridcolor="#2A3550"),
-        yaxis=dict(tickfont=dict(color=FONT_COLOR), gridcolor="#2A3550", title="Value"),
-        legend=dict(bgcolor=CARD_BG, bordercolor="#374151", borderwidth=1,
-                    font=dict(color=FONT_COLOR)),
-        height=380,
-        title=dict(text=f"Defensive Profile — {target.name} vs Similar Defenders",
-                   font=dict(size=14, color=FONT_COLOR)),
-        **LAYOUT_DEFAULTS,
-    )
-    return table_df, fig
+    def _style(row):
+        stat = row.name
+        config = next((s for s in stats_config if s[0] == stat), None)
+        lower_is_better = config[2] if config else False
+        target_val = row.iloc[0]
+        styles = [""]  # target column unstyled
+        for val in row.iloc[1:]:
+            if val == 0 and target_val == 0:
+                styles.append("")
+            elif (lower_is_better and val < target_val) or (not lower_is_better and val > target_val):
+                styles.append("background-color: rgba(34,197,94,0.25); color: #86efac")
+            elif (lower_is_better and val > target_val) or (not lower_is_better and val < target_val):
+                styles.append("background-color: rgba(239,68,68,0.2); color: #fca5a5")
+            else:
+                styles.append("")
+        return styles
+
+    styled = df.style.apply(_style, axis=1)
+    return styled
 
 
 def _hex_to_rgb(hex_color: str) -> str:

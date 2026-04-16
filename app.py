@@ -744,10 +744,9 @@ with tab3:
                 )
 
             if def_player:
-                table_df, bar_fig = plot_similarity_comparison(def_player, similar, graph, top_k=3)
-                st.markdown("**Defensive Stat Comparison**")
-                st.dataframe(table_df, hide_index=True, use_container_width=True)
-                st.plotly_chart(bar_fig, use_container_width=True)
+                styled = plot_similarity_comparison(def_player, similar, graph, top_k=3)
+                st.markdown("**Defensive Stat Comparison** — green = better than target, red = worse")
+                st.dataframe(styled, use_container_width=True)
 
             st.markdown("---")
             st.markdown('<div class="section-header">Similarity Rankings</div>',
