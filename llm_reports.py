@@ -401,14 +401,26 @@ def generate_game_prep_report(
 # API call
 # ---------------------------------------------------------------------------
 
+def _sanitize(text: str) -> str:
+    """Replace common non-ASCII characters with ASCII equivalents."""
+    return (
+        text
+        .replace("\u2019", "'").replace("\u2018", "'")   # curly single quotes
+        .replace("\u201c", '"').replace("\u201d", '"')   # curly double quotes
+        .replace("\u2013", "-").replace("\u2014", "-")   # en/em dash
+        .replace("\u2026", "...")                         # ellipsis
+        .encode("ascii", errors="replace").decode("ascii")
+    )
+
+
 def _call_anthropic(user_prompt: str, api_key: str) -> str:
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
+            system=_sanitize(SYSTEM_PROMPT),
+            messages=[{"role": "user", "content": _sanitize(user_prompt)}],
         )
         return message.content[0].text
     except anthropic.AuthenticationError:
@@ -416,4 +428,4 @@ def _call_anthropic(user_prompt: str, api_key: str) -> str:
     except anthropic.RateLimitError:
         return "❌ Anthropic rate limit hit. Please wait a moment and try again."
     except Exception as e:
-        return f"❌ Report generation failed: {str(e)}"
+        return f"❌ Report generation failed: {e}"
