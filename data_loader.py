@@ -364,67 +364,62 @@ def fetch_epm_data(season: int = 2026, force_refresh: bool = False) -> Dict[str,
 
     html = resp.text
 
-    # Extract the players array embedded in the SvelteKit hydration script
-    # Format: players:[{player_id:...,player_name:"...",off:...,def:...,...},...]
-    match = re.search(r'players:\[(\{.*?\})\]', html, re.DOTALL)
-    if not match:
-        # Try broader match
-        match = re.search(r'"players":\s*\[(.+?)\](?=,\s*"|\})', html, re.DOTALL)
-    if not match:
-        print("  EPM: could not find players array in HTML")
-        return {}
-
-    # Parse individual player objects from JS literal syntax
-    raw_block = "[" + match.group(1) + "]" if not match.group(0).startswith("[") else match.group(0)
-
-    # Find all player objects
-    player_objects = re.findall(r'\{[^{}]+\}', html)
-
-    result = {}
-    float_fields = {
+    float_fields = [
         "off", "def", "tot",
         "p_pts_100", "p_ast_100", "p_blk_100", "p_stl_100",
         "p_drb_100", "p_orb_100", "p_tov_100",
         "p_fga_rim_100", "p_fga_mid_100", "p_fg3a_100",
-        "p_fgpct_rim_rk", "p_fgpct_mid_rk",
-    }
+        "p_fgpct_rim", "p_fgpct_mid",
+    ]
 
-    for obj in player_objects:
-        # Must have player_name to be a player record
-        name_match = re.search(r'player_name:"([^"]+)"', obj)
-        if not name_match:
-            name_match = re.search(r'"player_name":"([^"]+)"', obj)
-        if not name_match:
-            continue
+    result = {}
 
+    # Strategy 1: find player_name occurrences and extract surrounding context
+    # Works for both JS literal and JSON formats
+    for name_match in re.finditer(r'player_name["\s]*[:=]["\s]*"([^"]+)"', html):
         player_name = name_match.group(1).strip()
+        # Take a window of text around the name to find sibling fields
+        start = max(0, name_match.start() - 500)
+        end = min(len(html), name_match.end() + 1500)
+        window = html[start:end]
+
         stats = {}
         for field in float_fields:
-            # Match both JS literal (field:value) and JSON ("field":value)
-            m = re.search(rf'(?:^|,|\{{)\s*{re.escape(field)}\s*:(-?[\d.]+)', obj)
+            m = re.search(
+                rf'[,\{{]?\s*"?{re.escape(field)}"?\s*:\s*(-?[\d]+(?:\.[\d]+)?)',
+                window
+            )
             if m:
                 try:
                     stats[field] = float(m.group(1))
                 except ValueError:
                     pass
 
-        # Convert rim/mid fg% from rank to actual pct if available
-        # The site stores fgpct as rank; skip those, use raw pct fields
-        m_rim = re.search(r'p_fgpct_rim\s*:(-?[\d.]+)', obj)
-        if m_rim:
-            try:
-                stats["p_fgpct_rim"] = float(m_rim.group(1))
-            except ValueError:
-                pass
-        m_mid = re.search(r'p_fgpct_mid\s*:(-?[\d.]+)', obj)
-        if m_mid:
-            try:
-                stats["p_fgpct_mid"] = float(m_mid.group(1))
-            except ValueError:
-                pass
-
         if stats:
             result[player_name.lower()] = stats
+
+    # Strategy 2: if strategy 1 found nothing, try extracting flat {key:val} blocks
+    if not result:
+        for obj in re.findall(r'\{[^{}]{50,}\}', html):
+            name_m = re.search(r'player_name["\s]*[:=]["\s]*"([^"]+)"', obj)
+            if not name_m:
+                continue
+            player_name = name_m.group(1).strip()
+            stats = {}
+            for field in float_fields:
+                m = re.search(
+                    rf'[,\{{]?\s*"?{re.escape(field)}"?\s*:\s*(-?[\d]+(?:\.[\d]+)?)',
+                    obj
+                )
+                if m:
+                    try:
+                        stats[field] = float(m.group(1))
+                    except ValueError:
+                        pass
+            if stats:
+                result[player_name.lower()] = stats
+
+    print(f"  EPM: parsed {len(result)} players")
 
     if result:
         with open(cache_path, "w") as f:
