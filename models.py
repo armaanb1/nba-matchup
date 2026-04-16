@@ -62,6 +62,25 @@ class Player:
     pie: Optional[float] = None
     ast_pct: Optional[float] = None
 
+    # EPM stats (dunksandthrees.com)
+    epm_off: Optional[float] = None
+    epm_def: Optional[float] = None
+    epm_tot: Optional[float] = None
+
+    # Per-100 possession stats (dunksandthrees.com)
+    p_pts_100: Optional[float] = None
+    p_ast_100: Optional[float] = None
+    p_blk_100: Optional[float] = None
+    p_stl_100: Optional[float] = None
+    p_drb_100: Optional[float] = None
+    p_orb_100: Optional[float] = None
+    p_tov_100: Optional[float] = None
+    p_fga_rim_100: Optional[float] = None
+    p_fga_mid_100: Optional[float] = None
+    p_fg3a_100: Optional[float] = None
+    p_fgpct_rim: Optional[float] = None
+    p_fgpct_mid: Optional[float] = None
+
     # Matchup-derived (computed from graph)
     avg_ppp_off: Optional[float] = None   # avg PPP scored on offense
     avg_ppp_def: Optional[float] = None   # avg PPP allowed on defense
@@ -118,6 +137,21 @@ class Player:
             "USG%": fmt_pct(self.usg_pct),
             "PIE": fmt_f(self.pie, d=3),
             "AST%": fmt_pct(self.ast_pct),
+            "EPM": fmt_f(self.epm_tot, d=2),
+            "OEPM": fmt_f(self.epm_off, d=2),
+            "DEPM": fmt_f(self.epm_def, d=2),
+            "PTS/100": fmt_f(self.p_pts_100, d=1),
+            "AST/100": fmt_f(self.p_ast_100, d=1),
+            "BLK/100": fmt_f(self.p_blk_100, d=1),
+            "STL/100": fmt_f(self.p_stl_100, d=1),
+            "DRB/100": fmt_f(self.p_drb_100, d=1),
+            "ORB/100": fmt_f(self.p_orb_100, d=1),
+            "TOV/100": fmt_f(self.p_tov_100, d=1),
+            "Rim FGA/100": fmt_f(self.p_fga_rim_100, d=1),
+            "Mid FGA/100": fmt_f(self.p_fga_mid_100, d=1),
+            "3PA/100": fmt_f(self.p_fg3a_100, d=1),
+            "Rim FG%": fmt_pct(self.p_fgpct_rim),
+            "Mid FG%": fmt_pct(self.p_fgpct_mid),
         }
 
 

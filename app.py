@@ -510,6 +510,14 @@ _ADV_STAT_FIELDS = {
     "Off Rating": ("off_rating", False), "Def Rating": ("def_rating", True),
     "Net Rating": ("net_rating", False), "USG%": ("usg_pct", False),
     "PIE": ("pie", False), "AST%": ("ast_pct", False),
+    "EPM": ("epm_tot", False), "OEPM": ("epm_off", False), "DEPM": ("epm_def", False),
+    "PTS/100": ("p_pts_100", False), "AST/100": ("p_ast_100", False),
+    "BLK/100": ("p_blk_100", False), "STL/100": ("p_stl_100", False),
+    "DRB/100": ("p_drb_100", False), "ORB/100": ("p_orb_100", False),
+    "TOV/100": ("p_tov_100", True),
+    "Rim FGA/100": ("p_fga_rim_100", False), "Mid FGA/100": ("p_fga_mid_100", False),
+    "3PA/100": ("p_fg3a_100", False),
+    "Rim FG%": ("p_fgpct_rim", False), "Mid FG%": ("p_fgpct_mid", False),
 }
 
 def _pct_label(value, all_values, lower_is_better=False):

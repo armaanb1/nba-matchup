@@ -321,17 +321,17 @@ def plot_similarity_radar(
     Radar chart comparing the target defender to their top-k similar defenders
     across shared stat dimensions.
     """
-    stat_labels = ["PPG allowed\n(avg PPP × 10)", "Matchups", "DBPM", "BPG", "SPG"]
+    stat_labels = ["PPG allowed\n(avg PPP × 10)", "Matchups", "DEPM", "BPG", "SPG"]
 
     def _get_vals(player: Player) -> List[float]:
         ppp = (player.avg_ppp_def or 0) * 10
         matchups = min(player.def_matchup_count, 50)
-        dbpm = (getattr(player, 'dbpm', None) or 0) + 5  # shift to positive range
+        depm = (getattr(player, 'epm_def', None) or 0) + 5  # shift to positive range
         bpg = player.bpg or 0
         spg = player.spg or 0
-        return [ppp, matchups / 5, dbpm, bpg * 5, spg * 10]
+        return [ppp, matchups / 5, depm, bpg * 5, spg * 10]
 
-    categories = ["PPP Allowed", "Matchup Load", "DBPM", "Blocks", "Steals"]
+    categories = ["PPP Allowed", "Matchup Load", "DEPM", "Blocks", "Steals"]
     theta = categories + [categories[0]]
 
     colors = [GOLD, RED, NAVY, GREEN, "#A855F7"]

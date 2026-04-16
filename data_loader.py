@@ -323,6 +323,120 @@ def get_nba_advanced_stats(player_id: int, season: str = "2024-25") -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# EPM data from dunksandthrees.com
+# ---------------------------------------------------------------------------
+
+def fetch_epm_data(season: int = 2026, force_refresh: bool = False) -> Dict[str, dict]:
+    """
+    Fetch EPM and per-100 stats from dunksandthrees.com/epm.
+    Data is embedded as JS object literals in the SSR HTML.
+    Returns dict keyed by lowercase player name -> stat dict.
+    Cached to data/cache/epm_{season}.json.
+    """
+    import re
+    cache_path = CACHE_DIR / f"epm_{season}.json"
+    if not force_refresh and cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        resp = requests.get(
+            "https://dunksandthrees.com/epm",
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"  EPM fetch failed: {e}")
+        return {}
+
+    html = resp.text
+
+    # Extract the players array embedded in the SvelteKit hydration script
+    # Format: players:[{player_id:...,player_name:"...",off:...,def:...,...},...]
+    match = re.search(r'players:\[(\{.*?\})\]', html, re.DOTALL)
+    if not match:
+        # Try broader match
+        match = re.search(r'"players":\s*\[(.+?)\](?=,\s*"|\})', html, re.DOTALL)
+    if not match:
+        print("  EPM: could not find players array in HTML")
+        return {}
+
+    # Parse individual player objects from JS literal syntax
+    raw_block = "[" + match.group(1) + "]" if not match.group(0).startswith("[") else match.group(0)
+
+    # Find all player objects
+    player_objects = re.findall(r'\{[^{}]+\}', html)
+
+    result = {}
+    float_fields = {
+        "off", "def", "tot",
+        "p_pts_100", "p_ast_100", "p_blk_100", "p_stl_100",
+        "p_drb_100", "p_orb_100", "p_tov_100",
+        "p_fga_rim_100", "p_fga_mid_100", "p_fg3a_100",
+        "p_fgpct_rim_rk", "p_fgpct_mid_rk",
+    }
+
+    for obj in player_objects:
+        # Must have player_name to be a player record
+        name_match = re.search(r'player_name:"([^"]+)"', obj)
+        if not name_match:
+            name_match = re.search(r'"player_name":"([^"]+)"', obj)
+        if not name_match:
+            continue
+
+        player_name = name_match.group(1).strip()
+        stats = {}
+        for field in float_fields:
+            # Match both JS literal (field:value) and JSON ("field":value)
+            m = re.search(rf'(?:^|,|\{{)\s*{re.escape(field)}\s*:(-?[\d.]+)', obj)
+            if m:
+                try:
+                    stats[field] = float(m.group(1))
+                except ValueError:
+                    pass
+
+        # Convert rim/mid fg% from rank to actual pct if available
+        # The site stores fgpct as rank; skip those, use raw pct fields
+        m_rim = re.search(r'p_fgpct_rim\s*:(-?[\d.]+)', obj)
+        if m_rim:
+            try:
+                stats["p_fgpct_rim"] = float(m_rim.group(1))
+            except ValueError:
+                pass
+        m_mid = re.search(r'p_fgpct_mid\s*:(-?[\d.]+)', obj)
+        if m_mid:
+            try:
+                stats["p_fgpct_mid"] = float(m_mid.group(1))
+            except ValueError:
+                pass
+
+        if stats:
+            result[player_name.lower()] = stats
+
+    if result:
+        with open(cache_path, "w") as f:
+            json.dump(result, f)
+        print(f"  EPM: cached {len(result)} players")
+    else:
+        print("  EPM: no player stats parsed from HTML")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Graph enrichment
 # ---------------------------------------------------------------------------
 
@@ -336,7 +450,12 @@ def enrich_graph(
       - Bio from CommonPlayerInfo (position, height, weight, team, …)
       - Per-game stats from PlayerCareerStats
       - Advanced stats from NBA API (off/def/net rating, USG%, PIE, AST%)
+      - EPM + per-100 stats from dunksandthrees.com
     """
+    # Fetch EPM data once for all players (single HTTP request, cached)
+    season_year = int(season.split("-")[0]) + 1  # "2025-26" -> 2026
+    epm_data = fetch_epm_data(season=season_year)
+
     total = len(graph.players)
     for i, (pid, player) in enumerate(graph.players.items()):
         if progress_callback:
@@ -382,6 +501,25 @@ def enrich_graph(
             player.ast_pct = adv.get("ast_pct")
             if adv.get("ts_pct") is not None:
                 player.ts_pct = adv.get("ts_pct")
+
+        # EPM + per-100 from dunksandthrees.com (matched by lowercase name)
+        epm = epm_data.get(player.name.lower(), {})
+        if epm:
+            player.epm_off = epm.get("off")
+            player.epm_def = epm.get("def")
+            player.epm_tot = epm.get("tot")
+            player.p_pts_100 = epm.get("p_pts_100")
+            player.p_ast_100 = epm.get("p_ast_100")
+            player.p_blk_100 = epm.get("p_blk_100")
+            player.p_stl_100 = epm.get("p_stl_100")
+            player.p_drb_100 = epm.get("p_drb_100")
+            player.p_orb_100 = epm.get("p_orb_100")
+            player.p_tov_100 = epm.get("p_tov_100")
+            player.p_fga_rim_100 = epm.get("p_fga_rim_100")
+            player.p_fga_mid_100 = epm.get("p_fga_mid_100")
+            player.p_fg3a_100 = epm.get("p_fg3a_100")
+            player.p_fgpct_rim = epm.get("p_fgpct_rim")
+            player.p_fgpct_mid = epm.get("p_fgpct_mid")
 
         # Update graph node attributes
         node_off = f"off_{pid}"
