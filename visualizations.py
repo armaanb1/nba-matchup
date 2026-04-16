@@ -325,13 +325,13 @@ def plot_similarity_comparison(
 
     # (label, getter, lower_is_better)
     stats_config = [
-        ("PPP Allowed", lambda p: round((p.avg_ppp_def or 0), 1),  True),
-        ("Matchups",    lambda p: p.def_matchup_count,              False),
-        ("DEPM",        lambda p: round(getattr(p, "epm_def", None) or 0, 1), False),
-        ("BPG",         lambda p: round(p.bpg or 0, 1),            False),
-        ("SPG",         lambda p: round(p.spg or 0, 1),            False),
-        ("BLK/100",     lambda p: round(getattr(p, "p_blk_100", None) or 0, 1), False),
-        ("STL/100",     lambda p: round(getattr(p, "p_stl_100", None) or 0, 1), False),
+        ("PPP Allowed", lambda p: p.avg_ppp_def or 0,                          True),
+        ("Matchups",    lambda p: p.def_matchup_count,                          False),
+        ("DEPM",        lambda p: getattr(p, "epm_def", None) or 0,            False),
+        ("BPG",         lambda p: p.bpg or 0,                                  False),
+        ("SPG",         lambda p: p.spg or 0,                                  False),
+        ("BLK/100",     lambda p: getattr(p, "p_blk_100", None) or 0,         False),
+        ("STL/100",     lambda p: getattr(p, "p_stl_100", None) or 0,         False),
     ]
 
     players = [target]
@@ -368,7 +368,7 @@ def plot_similarity_comparison(
 
     # Format each row's decimal places individually
     fmt_map = {
-        "PPP Allowed": "{:.2f}",
+        "PPP Allowed": "{:.3f}",
         "Matchups":    "{:.0f}",
     }
     default_fmt = "{:.1f}"
