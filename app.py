@@ -299,7 +299,8 @@ with st.sidebar:
             try:
                 enrich_graph(st.session_state.graph,
                              season=st.session_state.season,
-                             progress_callback=_prog)
+                             progress_callback=_prog,
+                             force_refresh_epm=True)
                 st.session_state.enriched = True
                 graph = st.session_state.graph
                 prog_bar.empty()

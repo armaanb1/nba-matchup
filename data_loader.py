@@ -364,60 +364,45 @@ def fetch_epm_data(season: int = 2026, force_refresh: bool = False) -> Dict[str,
 
     html = resp.text
 
-    float_fields = [
-        "off", "def", "tot",
-        "p_pts_100", "p_ast_100", "p_blk_100", "p_stl_100",
-        "p_drb_100", "p_orb_100", "p_tov_100",
-        "p_fga_rim_100", "p_fga_mid_100", "p_fg3a_100",
-        "p_fgpct_rim", "p_fgpct_mid",
-    ]
+    # Fields to extract — maps our attribute name to the site's JS key
+    field_map = {
+        "off": "off", "def": "def", "tot": "tot",
+        "p_pts_100": "p_pts_100", "p_ast_100": "p_ast_100",
+        "p_blk_100": "p_blk_100", "p_stl_100": "p_stl_100",
+        "p_drb_100": "p_drb_100", "p_orb_100": "p_orb_100",
+        "p_tov_100": "p_tov_100", "p_fga_rim_100": "p_fga_rim_100",
+        "p_fga_mid_100": "p_fga_mid_100", "p_fg3a_100": "p_fg3a_100",
+        "p_fgpct_rim": "p_fgpct_rim", "p_fgpct_mid": "p_fgpct_mid",
+    }
 
     result = {}
 
-    # Strategy 1: find player_name occurrences and extract surrounding context
-    # Works for both JS literal and JSON formats
-    for name_match in re.finditer(r'player_name["\s]*[:=]["\s]*"([^"]+)"', html):
+    # The page embeds data as JS object literals with unquoted keys, e.g.:
+    # {season:2026,player_id:1641705,player_name:"Victor Wembanyama",...,off:4.81,def:3.82,...}
+    # Find each player_name and extract a window large enough to cover all fields
+    for name_match in re.finditer(r'player_name:"([^"]+)"', html):
         player_name = name_match.group(1).strip()
-        # Take a window of text around the name to find sibling fields
-        start = max(0, name_match.start() - 500)
-        end = min(len(html), name_match.end() + 1500)
-        window = html[start:end]
+        # Look back to find the opening brace, forward ~2000 chars for all fields
+        chunk_start = max(0, name_match.start() - 300)
+        chunk_end = min(len(html), name_match.end() + 2000)
+        chunk = html[chunk_start:chunk_end]
 
         stats = {}
-        for field in float_fields:
+        for attr, js_key in field_map.items():
+            # Match unquoted JS key: ,key:value or {key:value
+            # Value can be integer, float, or null
             m = re.search(
-                rf'[,\{{]?\s*"?{re.escape(field)}"?\s*:\s*(-?[\d]+(?:\.[\d]+)?)',
-                window
+                rf'(?<!["\w]){re.escape(js_key)}:(-?[0-9]+(?:\.[0-9]+)?)',
+                chunk
             )
             if m:
                 try:
-                    stats[field] = float(m.group(1))
+                    stats[attr] = float(m.group(1))
                 except ValueError:
                     pass
 
         if stats:
             result[player_name.lower()] = stats
-
-    # Strategy 2: if strategy 1 found nothing, try extracting flat {key:val} blocks
-    if not result:
-        for obj in re.findall(r'\{[^{}]{50,}\}', html):
-            name_m = re.search(r'player_name["\s]*[:=]["\s]*"([^"]+)"', obj)
-            if not name_m:
-                continue
-            player_name = name_m.group(1).strip()
-            stats = {}
-            for field in float_fields:
-                m = re.search(
-                    rf'[,\{{]?\s*"?{re.escape(field)}"?\s*:\s*(-?[\d]+(?:\.[\d]+)?)',
-                    obj
-                )
-                if m:
-                    try:
-                        stats[field] = float(m.group(1))
-                    except ValueError:
-                        pass
-            if stats:
-                result[player_name.lower()] = stats
 
     print(f"  EPM: parsed {len(result)} players")
 
@@ -439,6 +424,7 @@ def enrich_graph(
     graph: MatchupGraph,
     season: str = "2024-25",
     progress_callback=None,
+    force_refresh_epm: bool = False,
 ) -> None:
     """
     Enrich every player node in the graph with:
@@ -449,7 +435,7 @@ def enrich_graph(
     """
     # Fetch EPM data once for all players (single HTTP request, cached)
     season_year = int(season.split("-")[0]) + 1  # "2025-26" -> 2026
-    epm_data = fetch_epm_data(season=season_year)
+    epm_data = fetch_epm_data(season=season_year, force_refresh=force_refresh_epm)
 
     total = len(graph.players)
     for i, (pid, player) in enumerate(graph.players.items()):
