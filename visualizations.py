@@ -326,7 +326,7 @@ def plot_similarity_radar(
     def _get_vals(player: Player) -> List[float]:
         ppp = (player.avg_ppp_def or 0) * 10
         matchups = min(player.def_matchup_count, 50)
-        dbpm = (player.dbpm or 0) + 5  # shift to positive range
+        dbpm = (getattr(player, 'dbpm', None) or 0) + 5  # shift to positive range
         bpg = player.bpg or 0
         spg = player.spg or 0
         return [ppp, matchups / 5, dbpm, bpg * 5, spg * 10]
