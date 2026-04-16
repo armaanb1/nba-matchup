@@ -325,9 +325,9 @@ def plot_similarity_comparison(
 
     # (label, getter, lower_is_better)
     stats_config = [
-        ("PPP Allowed", lambda p: round((p.avg_ppp_def or 0), 3),  True),
+        ("PPP Allowed", lambda p: round((p.avg_ppp_def or 0), 1),  True),
         ("Matchups",    lambda p: p.def_matchup_count,              False),
-        ("DEPM",        lambda p: round(getattr(p, "epm_def", None) or 0, 2), False),
+        ("DEPM",        lambda p: round(getattr(p, "epm_def", None) or 0, 1), False),
         ("BPG",         lambda p: round(p.bpg or 0, 1),            False),
         ("SPG",         lambda p: round(p.spg or 0, 1),            False),
         ("BLK/100",     lambda p: round(getattr(p, "p_blk_100", None) or 0, 1), False),
@@ -359,9 +359,9 @@ def plot_similarity_comparison(
             if val == 0 and target_val == 0:
                 styles.append("")
             elif (lower_is_better and val < target_val) or (not lower_is_better and val > target_val):
-                styles.append("background-color: rgba(34,197,94,0.25); color: #86efac")
+                styles.append("background-color: rgba(34,197,94,0.3)")
             elif (lower_is_better and val > target_val) or (not lower_is_better and val < target_val):
-                styles.append("background-color: rgba(239,68,68,0.2); color: #fca5a5")
+                styles.append("background-color: rgba(239,68,68,0.3)")
             else:
                 styles.append("")
         return styles
