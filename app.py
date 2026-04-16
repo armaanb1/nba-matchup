@@ -277,6 +277,13 @@ with st.sidebar:
                 graph = g
                 st.success(f"Graph built — {g.graph.number_of_nodes()} nodes, "
                            f"{g.graph.number_of_edges()} edges")
+                # Auto-enrich from cache (fast since cache files are pre-committed)
+                try:
+                    enrich_graph(g, season=season)
+                    st.session_state.enriched = True
+                    graph = g
+                except Exception:
+                    pass  # silently skip — user can manually refresh
             except Exception as e:
                 st.error(f"Load failed: {e}")
 
