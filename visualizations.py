@@ -366,7 +366,29 @@ def plot_similarity_comparison(
                 styles.append("")
         return styles
 
+    # Format each row's decimal places individually
+    fmt_map = {
+        "PPP Allowed": "{:.2f}",
+        "Matchups":    "{:.0f}",
+    }
+    default_fmt = "{:.1f}"
+
+    format_dict = {}
+    for col in df.columns:
+        format_dict[col] = {stat: fmt_map.get(stat, default_fmt) for stat in df.index}
+
+    # Build a per-cell format dict keyed by (col, stat)
+    cell_fmt = {}
+    for col in df.columns:
+        for stat in df.index:
+            cell_fmt[(stat, col)] = fmt_map.get(stat, default_fmt)
+
+    # Apply format per stat (row) across all columns
+    row_formats = {stat: fmt_map.get(stat, default_fmt) for stat in df.index}
+
     styled = df.style.apply(_style, axis=1)
+    for stat, fmt in row_formats.items():
+        styled = styled.format(fmt, subset=pd.IndexSlice[stat, :])
     return styled
 
 
