@@ -708,6 +708,31 @@ def get_playoff_series(
     return _parse_nba_result_set(data)
 
 
+def get_player_career_splits(
+    player_id: int,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Fetch per-game regular-season career splits from playercareerstats.
+
+    Uses SeasonTotalsRegularSeason (resultSets[0]).  Column names are parsed
+    dynamically from the headers key — never assumed by position.
+    Returns a DataFrame with one row per season (multi-team seasons may have
+    one row per team plus a TOT aggregate row).
+
+    Cached to data/cache/career_splits_{player_id}.json
+    """
+    cache_path = CACHE_DIR / f"career_splits_{player_id}.json"
+    url = (
+        "https://stats.nba.com/stats/playercareerstats"
+        f"?PlayerID={player_id}&PerMode=PerGame"
+    )
+    data = _fetch_nba_direct(url, cache_path, force_refresh=force_refresh)
+    if not data:
+        return pd.DataFrame()
+    return _parse_nba_result_set(data, idx=0)
+
+
 def get_team_roster(
     team_id: int,
     season: str = "2025-26",

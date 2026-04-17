@@ -742,3 +742,83 @@ def plot_player_stats_bar(player: Player) -> go.Figure:
                       title=dict(text="Per-Game Stats", font=dict(size=13, color=FONT_COLOR)),
                       **layout)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# CounterPoint — sparkline trend chart
+# ---------------------------------------------------------------------------
+
+def plot_sparkline(
+    seasons: List[str],
+    values: List[float],
+    stat_label: str,
+    flag: str,
+    height: int = 90,
+) -> go.Figure:
+    """
+    Small sparkline showing a single stat's trajectory across seasons.
+    Color-coded by CounterPoint flag type:
+      better_than_reputation → green
+      worse_than_reputation  → red
+      role_shift             → gold
+    """
+    color_map = {
+        "better_than_reputation": "#00875A",
+        "worse_than_reputation":  "#C8102E",
+        "role_shift":             "#F0A500",
+    }
+    color = color_map.get(flag, "#9CA3AF")
+
+    # Shorten season labels for readability (e.g. "2023-24" → "'23")
+    short = [s.split("-")[0][-2:] + "/" + s.split("-")[1][-2:] if "-" in s else s
+             for s in seasons]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=short,
+        y=values,
+        mode="lines+markers",
+        line=dict(color=color, width=2),
+        marker=dict(size=5, color=color),
+        showlegend=False,
+        hovertemplate="%{x}: %{y:.3f}<extra></extra>",
+    ))
+
+    # Subtle fill under the line — convert #RRGGBB to rgba(r,g,b,0.12)
+    def _hex_to_rgba(h: str, a: float = 0.12) -> str:
+        h = h.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{a})"
+
+    fig.add_trace(go.Scatter(
+        x=short,
+        y=values,
+        fill="tozeroy",
+        mode="none",
+        fillcolor=_hex_to_rgba(color) if color.startswith("#") else color,
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    fig.update_layout(
+        height=height,
+        margin=dict(l=4, r=4, t=18, b=4),
+        paper_bgcolor="#1A2035",
+        plot_bgcolor="#1A2035",
+        xaxis=dict(
+            showticklabels=True,
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(size=8, color="#9CA3AF"),
+        ),
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        title=dict(
+            text=stat_label,
+            font=dict(size=9, color="#9CA3AF"),
+            x=0.5,
+            xanchor="center",
+            y=0.98,
+            yanchor="top",
+        ),
+    )
+    return fig

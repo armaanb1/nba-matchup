@@ -37,9 +37,21 @@ from visualizations import (
     plot_ppp_heatmap,
     plot_similarity_comparison,
     plot_similarity_scores,
+    plot_sparkline,
     plot_team_comparison_bars,
     plot_team_radar,
 )
+from counterpoint import (
+    FLAG_COLOR,
+    FLAG_LABEL,
+    STAT_LABELS as CP_STAT_LABELS,
+    call_cp_briefing,
+    call_cp_qa,
+    compute_drift,
+    generate_example_questions,
+    get_cross_team_matchups,
+)
+from data_loader import get_player_career_splits
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -169,6 +181,79 @@ st.markdown(
 
     /* Remove Streamlit branding */
     #MainMenu, footer, header { visibility: hidden; }
+
+    /* ---- CounterPoint ---- */
+    .cp-entry {
+        border-radius: 10px;
+        padding: 16px 18px;
+        margin-bottom: 10px;
+    }
+    .cp-entry .cp-player-name {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #FAFAFA;
+        margin-bottom: 6px;
+    }
+    .cp-entry .cp-narrative  { color: #9CA3AF; font-size: 0.88rem; margin: 3px 0; }
+    .cp-entry .cp-numbers    { font-size: 0.88rem; margin: 3px 0; font-weight: 600; }
+    .cp-entry .cp-coaching   { color: #D1D5DB; font-size: 0.88rem; margin: 3px 0; font-style: italic; }
+    .cp-entry .cp-link       { color: #F0A500; font-size: 0.82rem; margin-top: 6px; }
+
+    .cp-flag-callout {
+        background: #162032;
+        border: 1px solid #2A3550;
+        border-left: 4px solid #F0A500;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 10px 0;
+        font-size: 0.88rem;
+    }
+    .cp-badge {
+        display: inline-block;
+        background: #F0A500;
+        color: #0E1117;
+        font-weight: 800;
+        font-size: 0.72rem;
+        border-radius: 4px;
+        padding: 2px 6px;
+        margin-right: 6px;
+        letter-spacing: 0.04em;
+        vertical-align: middle;
+    }
+    .cp-briefing {
+        background: #162032;
+        border: 1px solid #2A3550;
+        border-left: 4px solid #1D428A;
+        border-radius: 10px;
+        padding: 20px 24px;
+        line-height: 1.75;
+        font-size: 0.95rem;
+        color: #E5E7EB;
+        white-space: pre-wrap;
+    }
+    .cp-response-card {
+        background: #1A2035;
+        border: 1px solid #2A3550;
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin-top: 8px;
+    }
+    .cp-response-header {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #F0A500;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+    }
+    .cp-leaderboard-row {
+        background: #1A2035;
+        border: 1px solid #2A3550;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 6px;
+        font-size: 0.88rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -195,6 +280,15 @@ def _init_state():
         "team_data_updated_at": None,
         "roster_cache": {},          # {team_id: DataFrame}
         "roster_team_ids": {},       # {team_name: team_id}
+        # CounterPoint state
+        "cp_player_drift": {},       # {player_id: drift_dict | None}
+        "cp_matchup_drift": {},      # {player_id: drift_dict | None} for selected CP matchup
+        "cp_leaderboard_drift": {},  # {player_id: drift_dict | None} for leaderboard
+        "cp_chat_history": [],       # [{role, content}, ...] up to 6 messages
+        "cp_briefing": "",           # current generated briefing text
+        "cp_team1": "",
+        "cp_team2": "",
+        "cp_nav_player": None,       # player name pre-loaded from Scouting Report link
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -225,6 +319,65 @@ def _ppp_color(ppp: float, avg: float = 1.0) -> str:
     if ppp < avg - 0.15:
         return "#00875A"
     return "#F0A500"
+
+
+def _get_or_compute_drift(player_id: int, player_name: str = "") -> dict | None:
+    """
+    Return cached drift result for player_id, computing it if not yet cached.
+    Stores result in st.session_state.cp_player_drift[player_id].
+    Returns None if insufficient career history or player below threshold.
+    """
+    cache = st.session_state.cp_player_drift
+    if player_id in cache:
+        return cache[player_id]
+    try:
+        splits_df = get_player_career_splits(player_id)
+        result = compute_drift(player_id, splits_df, st.session_state.season, player_name=player_name)
+    except Exception:
+        result = None
+    cache[player_id] = result
+    return result
+
+
+def _render_cp_flag(player_id: int, player_name: str) -> None:
+    """
+    Show a compact CounterPoint flag callout for a player if a drift flag
+    exists above threshold.  Does nothing when no flag is present.
+    """
+    drift = _get_or_compute_drift(player_id, player_name)
+    if drift is None or not drift.get("flagged"):
+        return
+
+    flag  = drift["flag"]
+    stat  = drift["max_drift_stat"]
+    color = FLAG_COLOR.get(flag, "#F0A500")
+    label = FLAG_LABEL.get(flag, "Flag")
+    slbl  = CP_STAT_LABELS.get(stat, stat)
+
+    career_v = drift["career_avgs"].get(stat)
+    curr_v   = drift["current_vals"].get(stat)
+    fmt = ".1%" if "pct" in stat or stat == "ft_rate" else ".1f"
+    career_str = f"{career_v:{fmt}}" if career_v is not None else "—"
+    curr_str   = f"{curr_v:{fmt}}"   if curr_v  is not None else "—"
+    arrow      = "↑" if (curr_v or 0) > (career_v or 0) else "↓"
+
+    # Store the player name so CounterPoint tab can pre-load it
+    if st.session_state.cp_nav_player is None:
+        st.session_state.cp_nav_player = player_name
+
+    st.markdown(
+        f'<div class="cp-flag-callout">'
+        f'<span class="cp-badge">CP</span>'
+        f'<span style="color:{color}; font-weight:700;">{label}</span>'
+        f'&nbsp;&nbsp;'
+        f'<span style="color:#D1D5DB;">{slbl}: {career_str} {arrow} {curr_str}</span>'
+        f'<br>'
+        f'<span style="color:#9CA3AF;">{drift["coaching_impl"]}</span>'
+        f'<br>'
+        f'<span style="color:#F0A500; font-size:0.82rem;">Full analysis in CounterPoint →</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 
 
@@ -363,13 +516,14 @@ if not st.session_state.data_loaded or graph is None:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🔍  Matchup Lookup",
     "👤  Player Profile",
     "🛡  Defensive Similarity",
     "🤖  Scouting Report",
     "📊  Graph Overview",
     "🏆  Team Matchup",
+    "🎯  CounterPoint",
 ])
 
 
@@ -841,6 +995,13 @@ with tab4:
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {off_r} vs {def_r}")
                 st.markdown(f'<div class="report-box">{report}</div>', unsafe_allow_html=True)
+                # CounterPoint flags — show for both players if drift detected
+                off_pid_r = graph.find_player_id(off_r)
+                def_pid_r = graph.find_player_id(def_r)
+                if off_pid_r:
+                    _render_cp_flag(off_pid_r, off_r)
+                if def_pid_r:
+                    _render_cp_flag(def_pid_r, def_r)
             else:
                 st.warning("No direct matchup found for that pair with sufficient possessions.")
 
@@ -862,6 +1023,10 @@ with tab4:
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {pp_r_player} ({pp_r_role.title()})")
                 st.markdown(f'<div class="report-box">{report}</div>', unsafe_allow_html=True)
+                # CounterPoint flag
+                pp_pid_r = graph.find_player_id(pp_r_player)
+                if pp_pid_r:
+                    _render_cp_flag(pp_pid_r, pp_r_player)
             else:
                 st.warning("Player not found.")
 
@@ -970,6 +1135,463 @@ with tab5:
         st.dataframe(pd.DataFrame(top_def), hide_index=True, use_container_width=True)
 
 
+# ===========================================================================
+# TAB 7 — CounterPoint
+# ===========================================================================
+with tab7:
+    st.markdown('<div class="section-header">CounterPoint Intelligence</div>', unsafe_allow_html=True)
+    st.markdown(
+        "Data-driven system that detects when conventional scouting wisdom is "
+        "statistically outdated — quantifying the gap between a player's reputation "
+        "and their current performance."
+    )
+
+    if not st.session_state.api_key:
+        st.markdown(
+            '<div class="info-box">⚠️ Enter your <b>Anthropic API key</b> in the sidebar '
+            'to enable CounterPoint briefings and Q&amp;A.</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Team selectors ────────────────────────────────────────────────────────
+    # Prefer team names from the loaded team stats; fall back to graph player teams.
+    _cp_team_names: list = []
+    if st.session_state.get("team_data_loaded") and st.session_state.get("team_stats_df") is not None:
+        _cp_tnc = next(
+            (c for c in ["TEAM_NAME", "TeamName"] if c in st.session_state.team_stats_df.columns),
+            None,
+        )
+        if _cp_tnc:
+            _cp_team_names = sorted(st.session_state.team_stats_df[_cp_tnc].dropna().tolist())
+
+    if not _cp_team_names:
+        _cp_team_names = sorted(set(p.team for p in graph.players.values() if p.team))
+
+    if not _cp_team_names:
+        st.markdown(
+            '<div class="info-box">Load matchup data and enrich players (sidebar) to enable '
+            'CounterPoint team analysis.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _cp_col1, _cp_col2 = st.columns(2)
+        with _cp_col1:
+            _def_t1 = (
+                _cp_team_names.index("Los Angeles Lakers")
+                if "Los Angeles Lakers" in _cp_team_names else 0
+            )
+            _cp_t1 = st.selectbox("Team 1", _cp_team_names, index=_def_t1, key="cp_team1_sel")
+        with _cp_col2:
+            _def_t2 = (
+                _cp_team_names.index("Boston Celtics")
+                if "Boston Celtics" in _cp_team_names
+                else min(1, len(_cp_team_names) - 1)
+            )
+            _cp_t2 = st.selectbox("Team 2", _cp_team_names, index=_def_t2, key="cp_team2_sel")
+
+        # Persist selected teams to session state so Q&A and flag navigation can read them
+        st.session_state.cp_team1 = _cp_t1
+        st.session_state.cp_team2 = _cp_t2
+
+        # Team stats rows (for Claude context)
+        _cp_t1_stats: dict | None = None
+        _cp_t2_stats: dict | None = None
+        if st.session_state.get("team_stats_df") is not None:
+            _cp_tdf = st.session_state.team_stats_df
+            _cp_tnc2 = next(
+                (c for c in ["TEAM_NAME", "TeamName"] if c in _cp_tdf.columns), None
+            )
+            if _cp_tnc2:
+                _r1 = _cp_tdf[_cp_tdf[_cp_tnc2] == _cp_t1]
+                _r2 = _cp_tdf[_cp_tdf[_cp_tnc2] == _cp_t2]
+                if not _r1.empty:
+                    _cp_t1_stats = _r1.iloc[0].to_dict()
+                if not _r2.empty:
+                    _cp_t2_stats = _r2.iloc[0].to_dict()
+
+        # ── Cross-team matchup edges ──────────────────────────────────────────
+        _cp_matchups = get_cross_team_matchups(graph, _cp_t1, _cp_t2, top_n=12)
+
+        # ── Analyse button ────────────────────────────────────────────────────
+        _cp_analyse_btn = st.button(
+            "⚡ Run CounterPoint Analysis",
+            type="primary",
+            key="cp_analyse",
+        )
+
+        if _cp_analyse_btn or st.session_state.cp_matchup_drift:
+            if _cp_analyse_btn:
+                # Compute drift for every offensive player in the cross-team matchups
+                _cp_pids_to_run = list({m["off_pid"] for m in _cp_matchups})
+                _cp_prog = st.progress(0, text="Computing narrative drift…")
+                for _ci, _cpid in enumerate(_cp_pids_to_run):
+                    _cp_prog.progress(
+                        (_ci + 1) / max(len(_cp_pids_to_run), 1),
+                        text=f"Analysing {graph.players[_cpid].name if _cpid in graph.players else _cpid}…",
+                    )
+                    if _cpid not in st.session_state.cp_matchup_drift:
+                        try:
+                            _cp_splits = get_player_career_splits(_cpid)
+                            _cp_pname = graph.players[_cpid].name if _cpid in graph.players else ""
+                            _cp_result = compute_drift(_cpid, _cp_splits, st.session_state.season, player_name=_cp_pname)
+                        except Exception:
+                            _cp_result = None
+                        st.session_state.cp_matchup_drift[_cpid] = _cp_result
+                _cp_prog.empty()
+
+            # ──────────────────────────────────────────────────────────────────
+            # SECTION 1 — Matchup Intelligence Panel
+            # ──────────────────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown(
+                '<div class="section-header">Matchup Intelligence Panel</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Collect flagged players for briefing + Q&A chips
+            _cp_flagged: list = []
+
+            if not _cp_matchups:
+                st.info(
+                    f"No cross-team matchup edges found between {_cp_t1} and {_cp_t2} "
+                    f"in the loaded season data. Try a different team pair or lower the "
+                    f"min possessions filter."
+                )
+            else:
+                for _mi, _m in enumerate(_cp_matchups):
+                    _off_pid  = _m["off_pid"]
+                    _off_name = _m["off_player"]
+                    _def_name = _m["def_player"]
+                    _drift    = st.session_state.cp_matchup_drift.get(_off_pid)
+
+                    if _drift and _drift.get("flagged"):
+                        _flag   = _drift["flag"]
+                        _color  = FLAG_COLOR.get(_flag, "#9CA3AF")
+                        _flabel = FLAG_LABEL.get(_flag, "")
+                        _stat   = _drift["max_drift_stat"]
+                        _slbl   = CP_STAT_LABELS.get(_stat, _stat)
+
+                        _cp_flagged.append({
+                            "name":     _off_name,
+                            "off_team": _m["off_team"],
+                            "drift":    _drift,
+                        })
+
+                        st.markdown(
+                            f'<div class="cp-entry" style="background:#1A2035; '
+                            f'border-left: 4px solid {_color};">'
+                            f'<div class="cp-player-name">{_off_name} '
+                            f'<span style="color:#9CA3AF; font-size:0.82rem; font-weight:400;">'
+                            f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
+                            f'<div style="display:inline-block; background:{_color}33; '
+                            f'color:{_color}; border:1px solid {_color}; border-radius:4px; '
+                            f'padding:1px 8px; font-size:0.75rem; font-weight:700; '
+                            f'margin-bottom:6px;">{_flabel}</div>'
+                            f'<div class="cp-narrative"><b>The narrative:</b> '
+                            f'{_drift["narrative"]}</div>'
+                            f'<div class="cp-numbers" style="color:{_color};">'
+                            f'<b>The numbers say:</b> {_drift["numbers_say"]}</div>'
+                            f'<div class="cp-coaching"><b>Coaching implication:</b> '
+                            f'{_drift["coaching_impl"]}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                        # Sparkline for the flagged stat
+                        _traj = _drift["trajectories"].get(_stat, {})
+                        if _traj.get("seasons") and len(_traj["seasons"]) >= 2:
+                            _spark_key = f"sparkline_{_off_name.replace(' ', '_')}_{_stat}_{_mi}"
+                            st.plotly_chart(
+                                plot_sparkline(
+                                    _traj["seasons"],
+                                    _traj["values"],
+                                    _slbl,
+                                    _flag,
+                                ),
+                                use_container_width=False,
+                                config={"displayModeBar": False},
+                                key=_spark_key,
+                            )
+                    elif _drift and not _drift.get("flagged"):
+                        # Stable player — show actual stat summary instead of generic message
+                        _stable_txt = _drift.get("stable_summary", "")
+                        st.markdown(
+                            f'<div class="cp-entry" style="background:#1A2035; '
+                            f'border-left: 4px solid #2A3550;">'
+                            f'<div class="cp-player-name">{_off_name} '
+                            f'<span style="color:#9CA3AF; font-size:0.82rem; font-weight:400;">'
+                            f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
+                            f'<div style="color:#6B7280; font-size:0.82rem;">'
+                            f'{_stable_txt if _stable_txt else "Scouting report is holding up — no significant narrative drift detected."}'
+                            f'</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        # No drift data computed yet
+                        st.markdown(
+                            f'<div class="cp-entry" style="background:#1A2035; '
+                            f'border-left: 4px solid #2A3550;">'
+                            f'<div class="cp-player-name">{_off_name} '
+                            f'<span style="color:#9CA3AF; font-size:0.82rem; font-weight:400;">'
+                            f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
+                            f'<div style="color:#6B7280; font-size:0.82rem;">'
+                            f'No narrative drift detected — conventional scouting report is holding up.</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # ── Claude briefing ───────────────────────────────────────────
+                if _cp_flagged and st.session_state.api_key:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    _cp_brief_btn = st.button(
+                        "Generate Pre-Series Intelligence Briefing",
+                        key="cp_brief_btn",
+                        type="primary",
+                    )
+                    if _cp_brief_btn:
+                        with st.spinner("CounterPoint is writing the briefing…"):
+                            st.session_state.cp_briefing = call_cp_briefing(
+                                _cp_flagged, _cp_t1, _cp_t2,
+                                _cp_t1_stats, _cp_t2_stats,
+                                st.session_state.api_key,
+                            )
+                    if st.session_state.cp_briefing:
+                        st.markdown(
+                            f'<div class="cp-briefing">{st.session_state.cp_briefing}</div>',
+                            unsafe_allow_html=True,
+                        )
+                elif not st.session_state.api_key:
+                    st.caption("Add an API key in the sidebar to generate the pre-series briefing.")
+
+            # ──────────────────────────────────────────────────────────────────
+            # SECTION 2 — Most Misread Players Leaderboard
+            # ──────────────────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown(
+                '<div class="section-header">Most Misread Players This Postseason</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "Players with the largest gap between their established reputation and current "
+                "season reality — ranked by narrative drift score."
+            )
+
+            _lb_col1, _lb_col2 = st.columns([2, 1])
+            with _lb_col2:
+                _lb_compute_btn = st.button(
+                    "Compute Leaderboard",
+                    key="cp_lb_btn",
+                    help="Fetches career splits for all active players. May take 1-2 minutes.",
+                )
+
+            if _lb_compute_btn:
+                # Compute drift for the top 80 players by total possessions
+                _lb_players_sorted = sorted(
+                    graph.players.values(),
+                    key=lambda p: (p.off_matchup_count or 0) + (p.def_matchup_count or 0),
+                    reverse=True,
+                )[:80]
+                _lb_prog = st.progress(0, text="Building leaderboard…")
+                for _li, _lp in enumerate(_lb_players_sorted):
+                    _lb_prog.progress(
+                        (_li + 1) / len(_lb_players_sorted),
+                        text=f"Analysing {_lp.name}…",
+                    )
+                    if _lp.player_id not in st.session_state.cp_leaderboard_drift:
+                        try:
+                            _lb_splits = get_player_career_splits(_lp.player_id)
+                            _lb_result = compute_drift(
+                                _lp.player_id, _lb_splits, st.session_state.season,
+                                player_name=_lp.name,
+                            )
+                        except Exception:
+                            _lb_result = None
+                        st.session_state.cp_leaderboard_drift[_lp.player_id] = _lb_result
+                _lb_prog.empty()
+
+            # Render leaderboard if data exists
+            _lb_data = {
+                pid: d for pid, d in st.session_state.cp_leaderboard_drift.items()
+                if d is not None and d.get("flagged")
+            }
+
+            if not _lb_data:
+                if not _lb_compute_btn:
+                    st.markdown(
+                        '<div class="info-box">Click <b>Compute Leaderboard</b> above to rank '
+                        'players by narrative drift score. Analyses the top 80 most-active '
+                        'players in the loaded matchup data.</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                # Sort all flagged players by absolute drift score
+                _lb_ranked = sorted(
+                    _lb_data.items(),
+                    key=lambda x: abs(x[1]["max_drift_score"]),
+                    reverse=True,
+                )
+
+                # Try to split by conference using standings data
+                _lb_conf_map: Dict[int, str] = {}
+                _sdf_lb = st.session_state.get("standings_df")
+                if _sdf_lb is not None and not _sdf_lb.empty:
+                    _conf_col_lb = next(
+                        (c for c in ["Conference", "TeamConference"] if c in _sdf_lb.columns),
+                        None,
+                    )
+                    _nm_col_lb = next(
+                        (c for c in ["FULL_NAME", "TeamName"] if c in _sdf_lb.columns), None
+                    )
+                    if _conf_col_lb and _nm_col_lb:
+                        for _, _srow in _sdf_lb.iterrows():
+                            _conf_val = str(_srow.get(_conf_col_lb, "")).upper()
+                            _conf_str = "East" if _conf_val.startswith("E") else "West"
+                            _tnm = str(_srow.get(_nm_col_lb, "")).lower()
+                            for _pid, _d in _lb_ranked:
+                                _pl = graph.players.get(_pid)
+                                if _pl and _pl.team and _pl.team.lower() in _tnm:
+                                    _lb_conf_map[_pid] = _conf_str
+
+                _show_conferences = bool(_lb_conf_map)
+
+                def _render_lb_entries(entries, label):
+                    if label:
+                        st.markdown(f"**{label} Conference**")
+                    for rank, (pid, d) in enumerate(entries[:5], start=1):
+                        _pl = graph.players.get(pid)
+                        if not _pl:
+                            continue
+                        _fl    = FLAG_LABEL.get(d["flag"], "")
+                        _col   = FLAG_COLOR.get(d["flag"], "#9CA3AF")
+                        _sl    = CP_STAT_LABELS.get(d["max_drift_stat"], d["max_drift_stat"])
+                        _ca    = d["career_avgs"].get(d["max_drift_stat"])
+                        _cv    = d["current_vals"].get(d["max_drift_stat"])
+                        _fmt   = ".1%" if "pct" in d["max_drift_stat"] or d["max_drift_stat"] == "ft_rate" else ".1f"
+                        _ca_s  = f"{_ca:{_fmt}}" if _ca is not None else "—"
+                        _cv_s  = f"{_cv:{_fmt}}" if _cv is not None else "—"
+                        _z     = d["max_drift_score"]
+                        st.markdown(
+                            f'<div class="cp-leaderboard-row">'
+                            f'<span style="color:#9CA3AF; font-size:0.82rem;">#{rank}</span>&nbsp;&nbsp;'
+                            f'<b style="color:#FAFAFA;">{_pl.name}</b>&nbsp;'
+                            f'<span style="color:#9CA3AF; font-size:0.82rem;">{_pl.team or ""}</span>'
+                            f'&nbsp;&nbsp;'
+                            f'<span style="background:{_col}33; color:{_col}; border:1px solid {_col}; '
+                            f'border-radius:4px; padding:1px 6px; font-size:0.75rem;">{_fl}</span>'
+                            f'<br>'
+                            f'<span style="color:#9CA3AF; font-size:0.82rem;">Driving stat: '
+                            f'<b style="color:#D1D5DB;">{_sl}</b> — career {_ca_s} → this season {_cv_s} '
+                            f'({_z:+.1f}\u03c3)</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                if _show_conferences:
+                    _east_entries = [(pid, d) for pid, d in _lb_ranked if _lb_conf_map.get(pid) == "East"]
+                    _west_entries = [(pid, d) for pid, d in _lb_ranked if _lb_conf_map.get(pid) == "West"]
+                    _lb_c1, _lb_c2 = st.columns(2)
+                    with _lb_c1:
+                        _render_lb_entries(_east_entries, "Eastern")
+                    with _lb_c2:
+                        _render_lb_entries(_west_entries, "Western")
+                else:
+                    _render_lb_entries(_lb_ranked, "")
+
+            # ──────────────────────────────────────────────────────────────────
+            # SECTION 3 — Ask CounterPoint
+            # ──────────────────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown(
+                '<div class="section-header">Ask CounterPoint</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "Query the dashboard's own computed data in plain English. "
+                "CounterPoint answers using only the drift scores and stats loaded here — "
+                "not general basketball knowledge."
+            )
+
+            if not st.session_state.api_key:
+                st.markdown(
+                    '<div class="info-box">Add an Anthropic API key in the sidebar to enable Ask CounterPoint.</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                # Combine matchup drift + leaderboard drift for Q&A context
+                _qa_state = {
+                    **st.session_state.cp_leaderboard_drift,
+                    **st.session_state.cp_matchup_drift,
+                }
+
+                # Example question chips (dynamic based on flagged players)
+                _example_qs = generate_example_questions(_cp_t1, _cp_t2, _cp_flagged)
+
+                # Show conversation history
+                for _msg in st.session_state.cp_chat_history:
+                    _role_label = "You" if _msg["role"] == "user" else "CounterPoint"
+                    _role_color = "#9CA3AF" if _msg["role"] == "user" else "#F0A500"
+                    st.markdown(
+                        f'<div class="cp-response-card">'
+                        f'<div class="cp-response-header" style="color:{_role_color};">'
+                        f'{_role_label}</div>'
+                        f'<div style="color:#E5E7EB; font-size:0.93rem; line-height:1.65; '
+                        f'white-space:pre-wrap;">{_msg["content"]}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                # Input form
+                with st.form("cp_qa_form", clear_on_submit=True):
+                    _cp_query = st.text_input(
+                        "Ask a question",
+                        placeholder="e.g. Who is the most misread player in this series?",
+                        label_visibility="collapsed",
+                    )
+                    _cp_submit = st.form_submit_button("Ask CounterPoint", type="primary")
+
+                # Suggestion chips — clicking any populates a follow-up question
+                _chip_cols = st.columns(3)
+                _chip_clicked: str = ""
+                for _ci, (_chip_col, _q) in enumerate(zip(_chip_cols, _example_qs)):
+                    with _chip_col:
+                        if st.button(
+                            _q,
+                            key=f"cp_chip_{_ci}",
+                            use_container_width=True,
+                        ):
+                            _chip_clicked = _q
+
+                # Handle form submission or chip click
+                _cp_user_input = _cp_query if _cp_submit and _cp_query.strip() else _chip_clicked
+                if _cp_user_input:
+                    with st.spinner("CounterPoint is thinking…"):
+                        _cp_answer = call_cp_qa(
+                            _cp_user_input,
+                            graph,
+                            _qa_state,
+                            _cp_t1,
+                            _cp_t2,
+                            _cp_t1_stats,
+                            _cp_t2_stats,
+                            st.session_state.cp_chat_history,
+                            st.session_state.api_key,
+                        )
+                    # Update conversation history (keep last 3 exchanges = 6 messages)
+                    st.session_state.cp_chat_history.append(
+                        {"role": "user", "content": _cp_user_input}
+                    )
+                    st.session_state.cp_chat_history.append(
+                        {"role": "assistant", "content": _cp_answer}
+                    )
+                    st.session_state.cp_chat_history = st.session_state.cp_chat_history[-6:]
+                    st.rerun()
+
+                # Clear conversation button
+                if st.session_state.cp_chat_history:
+                    if st.button("Clear conversation", key="cp_clear"):
+                        st.session_state.cp_chat_history = []
+                        st.rerun()
 # ===========================================================================
 # TAB 6 — Team Matchup
 # ===========================================================================
@@ -1676,3 +2298,5 @@ with tab6:
             _nr = _trow.get("NET_RATING")
             if _nr is not None:
                 st.metric("Net Rating", f"{float(_nr):+.1f}")
+
+
