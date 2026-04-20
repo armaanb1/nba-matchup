@@ -2071,6 +2071,36 @@ with tab6:
             _east = _get_conf_seeds("E")
             _west = _get_conf_seeds("W")
 
+            # ── Confirmed play-in results (2025 West) ──────────────────────────
+            # Portland Trail Blazers won the 7 seed; Phoenix Suns won the 8 seed.
+            # Reorder the bottom of the West bracket so seeds 7-10 reflect the
+            # actual playoff bracket, not the regular-season standings order.
+            _playin_active = False   # play-in is complete — remove badges
+            _west_playin_order = ["Portland Trail Blazers", "Phoenix Suns"]
+            _west = _west.copy().reset_index(drop=True)
+            _name_check_col = _full_name_col if _full_name_col in _west.columns else _name_col
+            if _name_check_col in _west.columns:
+                def _row_matches(row, team):
+                    val = str(row.get(_name_check_col, "")).lower()
+                    return team.lower() in val or val in team.lower()
+                _bottom_idx = list(range(6, len(_west)))      # indices 6-9 (seeds 7-10)
+                _bottom_rows = _west.iloc[_bottom_idx].copy()
+                _ordered, _used = [], set()
+                for _t in _west_playin_order:
+                    for _bi in _bottom_rows.index:
+                        if _bi not in _used and _row_matches(_bottom_rows.loc[_bi], _t):
+                            _ordered.append(_bi)
+                            _used.add(_bi)
+                            break
+                # Append any remaining play-in rows not in the override list
+                for _bi in _bottom_rows.index:
+                    if _bi not in _used:
+                        _ordered.append(_bi)
+                if len(_ordered) == len(_bottom_idx):
+                    _west = pd.concat(
+                        [_west.iloc[:6], _bottom_rows.loc[_ordered]]
+                    ).reset_index(drop=True)
+
             def _seed_label(sr, seed_num) -> str:
                 """Build a seed line with play-in badge and win-loss."""
                 _nm = sr.get(_full_name_col) or sr.get(_name_col, "—")
