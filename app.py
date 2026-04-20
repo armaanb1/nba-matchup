@@ -88,7 +88,8 @@ _CSS = """
     [data-testid="stSidebar"] span,
     [data-testid="stSidebar"] label,
     [data-testid="stSidebar"] div { color: #f1f5f9 !important; }
-    [data-testid="stSidebar"] [data-baseweb="select"] span { color: #111111 !important; }
+    [data-testid="stSidebar"] [data-baseweb="select"] span,
+    [data-testid="stSidebar"] [data-baseweb="select"] div { color: #111111 !important; }
     [data-testid="stMetric"] {
         background: #131a2b;
         border: 1px solid #1e293b;
