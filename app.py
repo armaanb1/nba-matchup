@@ -45,6 +45,7 @@ from counterpoint import (
     FLAG_COLOR,
     FLAG_LABEL,
     STAT_LABELS as CP_STAT_LABELS,
+    call_cp_analysis_batch,
     call_cp_briefing,
     call_cp_qa,
     compute_drift,
@@ -64,196 +65,284 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Global CSS
+# Global CSS  (dark premium sports-analytics aesthetic)
 # ---------------------------------------------------------------------------
 st.markdown(
     """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
-    /* ---- Base ---- */
+    /* ── Base ──────────────────────────────────────────────────────────────── */
     html, body, [data-testid="stAppViewContainer"] {
-        background-color: #0E1117;
-        color: #FAFAFA;
-        font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+        background-color: #0a0e17;
+        color: #f1f5f9;
+        font-family: 'DM Sans', 'Inter', Arial, sans-serif;
     }
+    h1, h2, h3, h4 { font-family: 'DM Sans', Arial, sans-serif; }
 
-    /* ---- Sidebar ---- */
+    /* ── Sidebar ────────────────────────────────────────────────────────────── */
     [data-testid="stSidebar"] {
-        background-color: #1A2035;
-        border-right: 1px solid #2A3550;
+        background-color: #0d1220;
+        border-right: 1px solid #1e293b;
     }
-    [data-testid="stSidebar"] * { color: #FAFAFA !important; }
-
-    /* ---- Sidebar selectbox values: always black text ---- */
+    [data-testid="stSidebar"] * { color: #f1f5f9 !important; }
     [data-testid="stSidebar"] [data-baseweb="select"] * { color: #111111 !important; }
-    /* ---- Metric cards ---- */
-    [data-testid="stMetric"] {
-        background: #1A2035;
-        border: 1px solid #2A3550;
-        border-radius: 10px;
-        padding: 12px 16px;
-    }
-    [data-testid="stMetricValue"] { font-size: 1.6rem !important; color: #F0A500 !important; }
-    [data-testid="stMetricLabel"] { color: #9CA3AF !important; font-size: 0.78rem !important; }
 
-    /* ---- Tabs ---- */
+    /* ── Metric cards ────────────────────────────────────────────────────────── */
+    [data-testid="stMetric"] {
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 14px 18px;
+        transition: box-shadow 0.15s ease;
+    }
+    [data-testid="stMetric"]:hover {
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3);
+    }
+    [data-testid="stMetricValue"] { font-size: 1.6rem !important; color: #f59e0b !important; font-family: 'JetBrains Mono', monospace !important; }
+    [data-testid="stMetricLabel"] { color: #94a3b8 !important; font-size: 0.75rem !important; text-transform: uppercase; letter-spacing: 0.08em; }
+
+    /* ── Tabs ────────────────────────────────────────────────────────────────── */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 6px;
-        background: #1A2035;
-        padding: 6px;
-        border-radius: 10px;
+        gap: 4px;
+        background: #131a2b;
+        padding: 6px 8px;
+        border-radius: 12px;
+        border: 1px solid #1e293b;
     }
     .stTabs [data-baseweb="tab"] {
         background: transparent;
-        color: #9CA3AF;
+        color: #475569;
         border-radius: 8px;
-        padding: 8px 20px;
+        padding: 8px 18px;
         font-weight: 600;
-        font-size: 0.9rem;
+        font-size: 0.88rem;
+        font-family: 'DM Sans', Arial, sans-serif;
+        border-bottom: 3px solid transparent;
+        transition: color 0.15s ease, background 0.15s ease;
     }
+    .stTabs [data-baseweb="tab"]:hover { color: #94a3b8 !important; }
     .stTabs [aria-selected="true"] {
-        background: #1D428A !important;
-        color: #FFFFFF !important;
+        background: #1a2340 !important;
+        color: #f1f5f9 !important;
+        border-bottom: 3px solid #3b82f6 !important;
     }
 
-    /* ---- Data tables ---- */
-    .dataframe-container { border-radius: 8px; overflow: hidden; }
-    [data-testid="stDataFrame"] { border: 1px solid #2A3550; border-radius: 8px; }
+    /* ── Data tables ─────────────────────────────────────────────────────────── */
+    .dataframe-container { border-radius: 10px; overflow: hidden; }
+    [data-testid="stDataFrame"] { border: 1px solid #1e293b; border-radius: 10px; }
 
-    /* ---- Stat card ---- */
+    /* ── Stat card ───────────────────────────────────────────────────────────── */
     .stat-card {
-        background: #1A2035;
-        border: 1px solid #2A3550;
-        border-radius: 10px;
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
         padding: 14px 18px;
         margin-bottom: 8px;
+        transition: box-shadow 0.15s ease;
     }
-    .stat-card h4 { color: #F0A500; margin: 0 0 8px 0; font-size: 0.85rem; letter-spacing: 0.08em; text-transform: uppercase; }
-    .stat-card p { margin: 2px 0; color: #D1D5DB; font-size: 0.92rem; }
-    .stat-card span.value { color: #FAFAFA; font-weight: 600; }
+    .stat-card:hover { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25); }
+    .stat-card h4 {
+        color: #f59e0b;
+        margin: 0 0 10px 0;
+        font-size: 0.75rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        font-family: 'DM Sans', Arial, sans-serif;
+    }
+    .stat-card p { margin: 3px 0; color: #94a3b8; font-size: 0.9rem; }
+    .stat-card span.value { color: #f1f5f9; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
 
-    /* ---- Report output ---- */
+    /* ── Report output ───────────────────────────────────────────────────────── */
     .report-box {
-        background: #1A2035;
-        border: 1px solid #2A3550;
-        border-left: 4px solid #F0A500;
-        border-radius: 10px;
-        padding: 20px 24px;
-        line-height: 1.7;
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-left: 4px solid #f59e0b;
+        border-radius: 12px;
+        padding: 22px 26px;
+        line-height: 1.75;
         font-size: 0.95rem;
-        color: #E5E7EB;
+        color: #e2e8f0;
         white-space: pre-wrap;
+        font-family: 'DM Sans', Arial, sans-serif;
     }
 
-    /* ---- Section header ---- */
+    /* ── Section header ──────────────────────────────────────────────────────── */
     .section-header {
-        font-size: 1.1rem;
+        font-size: 1.05rem;
         font-weight: 700;
-        color: #F0A500;
-        border-bottom: 1px solid #2A3550;
-        padding-bottom: 6px;
-        margin: 18px 0 12px 0;
+        color: #f59e0b;
+        border-bottom: 1px solid #1e293b;
+        padding-bottom: 8px;
+        margin: 20px 0 14px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-family: 'DM Sans', Arial, sans-serif;
     }
 
-    /* ---- Player name badge ---- */
+    /* ── Player name badge ───────────────────────────────────────────────────── */
     .player-badge {
         display: inline-block;
-        background: #1D428A;
-        color: #FAFAFA;
-        border-radius: 6px;
-        padding: 4px 12px;
+        background: #1e3a5f;
+        color: #f1f5f9;
+        border: 1px solid #3b82f6;
+        border-radius: 8px;
+        padding: 5px 14px;
         font-weight: 700;
         font-size: 1.05rem;
         margin-bottom: 8px;
+        font-family: 'DM Sans', Arial, sans-serif;
     }
 
-    /* ---- Info box ---- */
+    /* ── Info box ────────────────────────────────────────────────────────────── */
     .info-box {
-        background: #162032;
-        border: 1px solid #2A3550;
-        border-radius: 8px;
+        background: #0d1220;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
         padding: 12px 16px;
-        color: #9CA3AF;
+        color: #94a3b8;
         font-size: 0.88rem;
     }
 
-    /* ---- Divider ---- */
-    hr { border-color: #2A3550 !important; }
+    /* ── Player headshot card ────────────────────────────────────────────────── */
+    .player-card {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
+    }
+    .player-card-info { flex: 1; }
+    .player-card-name { font-size: 1.15rem; font-weight: 700; color: #f1f5f9; }
+    .player-card-meta { font-size: 0.82rem; color: #94a3b8; margin-top: 2px; }
+
+    /* ── Matchup vs. header ──────────────────────────────────────────────────── */
+    .matchup-vs-header {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 16px 24px;
+        margin-bottom: 16px;
+    }
+    .matchup-vs-divider {
+        color: #475569;
+        font-size: 1.2rem;
+        font-weight: 600;
+        font-family: 'DM Sans', Arial, sans-serif;
+    }
+    .matchup-player-block { text-align: center; }
+    .matchup-player-block .name { font-size: 1.05rem; font-weight: 700; color: #f1f5f9; margin-top: 6px; }
+    .matchup-player-block .meta { font-size: 0.78rem; color: #94a3b8; }
+
+    /* ── Divider ─────────────────────────────────────────────────────────────── */
+    hr { border-color: #1e293b !important; }
 
     /* Remove Streamlit branding */
     #MainMenu, footer, header { visibility: hidden; }
 
-    /* ---- CounterPoint ---- */
+    /* ── CounterPoint ────────────────────────────────────────────────────────── */
     .cp-entry {
-        border-radius: 10px;
-        padding: 16px 18px;
-        margin-bottom: 10px;
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 12px;
+        transition: box-shadow 0.15s ease;
+    }
+    .cp-entry:hover { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.25); }
+    .cp-entry-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
     }
     .cp-entry .cp-player-name {
         font-size: 1.05rem;
         font-weight: 700;
-        color: #FAFAFA;
+        color: #f1f5f9;
         margin-bottom: 6px;
+        font-family: 'DM Sans', Arial, sans-serif;
     }
-    .cp-entry .cp-narrative  { color: #9CA3AF; font-size: 0.88rem; margin: 3px 0; }
-    .cp-entry .cp-numbers    { font-size: 0.88rem; margin: 3px 0; font-weight: 600; }
-    .cp-entry .cp-coaching   { color: #D1D5DB; font-size: 0.88rem; margin: 3px 0; font-style: italic; }
-    .cp-entry .cp-link       { color: #F0A500; font-size: 0.82rem; margin-top: 6px; }
+    .cp-entry .cp-narrative  { color: #94a3b8; font-size: 0.87rem; margin: 4px 0; line-height: 1.55; }
+    .cp-entry .cp-numbers    { font-size: 0.87rem; margin: 4px 0; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+    .cp-entry .cp-coaching   { color: #e2e8f0; font-size: 0.87rem; margin: 4px 0; font-style: italic; line-height: 1.55; }
 
     .cp-flag-callout {
-        background: #162032;
-        border: 1px solid #2A3550;
-        border-left: 4px solid #F0A500;
-        border-radius: 8px;
-        padding: 10px 14px;
-        margin: 10px 0;
+        background: #130f00;
+        border: 1px solid #1e293b;
+        border-left: 4px solid #f59e0b;
+        border-radius: 10px;
+        padding: 12px 16px;
+        margin: 12px 0;
         font-size: 0.88rem;
     }
     .cp-badge {
         display: inline-block;
-        background: #F0A500;
-        color: #0E1117;
+        background: #f59e0b;
+        color: #0a0e17;
         font-weight: 800;
-        font-size: 0.72rem;
+        font-size: 0.7rem;
         border-radius: 4px;
-        padding: 2px 6px;
-        margin-right: 6px;
-        letter-spacing: 0.04em;
+        padding: 2px 7px;
+        margin-right: 8px;
+        letter-spacing: 0.06em;
         vertical-align: middle;
+        font-family: 'DM Sans', Arial, sans-serif;
     }
     .cp-briefing {
-        background: #162032;
-        border: 1px solid #2A3550;
-        border-left: 4px solid #1D428A;
-        border-radius: 10px;
-        padding: 20px 24px;
-        line-height: 1.75;
+        background: #0d1220;
+        border: 1px solid #1e293b;
+        border-left: 4px solid #3b82f6;
+        border-radius: 12px;
+        padding: 22px 26px;
+        line-height: 1.8;
         font-size: 0.95rem;
-        color: #E5E7EB;
+        color: #e2e8f0;
         white-space: pre-wrap;
     }
     .cp-response-card {
-        background: #1A2035;
-        border: 1px solid #2A3550;
-        border-radius: 10px;
-        padding: 16px 20px;
-        margin-top: 8px;
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 16px 22px;
+        margin-top: 10px;
+        transition: box-shadow 0.15s ease;
     }
+    .cp-response-card:hover { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2); }
     .cp-response-header {
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         font-weight: 700;
-        color: #F0A500;
-        letter-spacing: 0.1em;
+        letter-spacing: 0.12em;
         text-transform: uppercase;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
+        font-family: 'DM Sans', Arial, sans-serif;
     }
     .cp-leaderboard-row {
-        background: #1A2035;
-        border: 1px solid #2A3550;
-        border-radius: 8px;
-        padding: 10px 14px;
-        margin-bottom: 6px;
+        background: #131a2b;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 12px 16px;
+        margin-bottom: 8px;
         font-size: 0.88rem;
+        transition: box-shadow 0.15s ease;
     }
+    .cp-leaderboard-row:hover { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.25); }
+
+    /* ── Stat number emphasis ────────────────────────────────────────────────── */
+    .stat-mono {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 500;
+    }
+
+    /* ── Skeleton loading pulse ──────────────────────────────────────────────── */
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .cp-loading { animation: pulse 1.4s ease-in-out infinite; color: #475569; font-style: italic; font-size: 0.85rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -289,6 +378,7 @@ def _init_state():
         "cp_team1": "",
         "cp_team2": "",
         "cp_nav_player": None,       # player name pre-loaded from Scouting Report link
+        "cp_ai_text": {},            # {player_id: {narrative, numbers_say, coaching_implication}}
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -315,10 +405,36 @@ def _stat_card(title: str, items: dict) -> str:
 
 def _ppp_color(ppp: float, avg: float = 1.0) -> str:
     if ppp > avg + 0.15:
-        return "#C8102E"
+        return "#ef4444"
     if ppp < avg - 0.15:
-        return "#00875A"
-    return "#F0A500"
+        return "#10b981"
+    return "#f59e0b"
+
+
+def _headshot_html(player_id: int, player_name: str, width: int = 80, height: int = 60) -> str:
+    """
+    Return an HTML <img> tag pointing to the NBA CDN headshot for player_id.
+    On load failure (404 or timeout) the image is hidden and replaced with
+    a styled initials placeholder in the primary accent colour.
+    """
+    url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+    initials = "".join(w[0].upper() for w in player_name.split()[:2] if w)
+    font_size = max(10, width // 4)
+    return (
+        f'<span style="display:inline-block;position:relative;'
+        f'width:{width}px;height:{height}px;flex-shrink:0;">'
+        f'<img src="{url}" width="{width}" height="{height}" '
+        f'style="border-radius:8px;border:1px solid #1e293b;object-fit:cover;'
+        f'display:block;vertical-align:middle;box-shadow:0 2px 8px rgba(0,0,0,.4);" '
+        f'onerror="this.style.display=\'none\';'
+        f'this.nextElementSibling.style.display=\'flex\';">'
+        f'<span style="display:none;width:{width}px;height:{height}px;'
+        f'background:#131a2b;border:1px solid #1e293b;border-radius:8px;'
+        f'align-items:center;justify-content:center;'
+        f'font-size:{font_size}px;font-weight:700;color:#3b82f6;'
+        f'font-family:\'DM Sans\',Arial,sans-serif;">{initials}</span>'
+        f'</span>'
+    )
 
 
 def _get_or_compute_drift(player_id: int, player_name: str = "") -> dict | None:
@@ -365,16 +481,22 @@ def _render_cp_flag(player_id: int, player_name: str) -> None:
     if st.session_state.cp_nav_player is None:
         st.session_state.cp_nav_player = player_name
 
+    # Use AI-generated coaching implication if available, fall back to template
+    _ai_entry = st.session_state.cp_ai_text.get(player_id, {})
+    coaching_text = _ai_entry.get("coaching_implication") or drift["coaching_impl"]
+
     st.markdown(
         f'<div class="cp-flag-callout">'
-        f'<span class="cp-badge">CP</span>'
+        f'<span class="cp-badge">⚡ CP</span>'
         f'<span style="color:{color}; font-weight:700;">{label}</span>'
         f'&nbsp;&nbsp;'
-        f'<span style="color:#D1D5DB;">{slbl}: {career_str} {arrow} {curr_str}</span>'
+        f'<span style="color:#e2e8f0; font-family:\'JetBrains Mono\',monospace;">'
+        f'{slbl}: {career_str} {arrow} {curr_str}</span>'
+        f'<br><br>'
+        f'<span style="color:#94a3b8;">{coaching_text}</span>'
         f'<br>'
-        f'<span style="color:#9CA3AF;">{drift["coaching_impl"]}</span>'
-        f'<br>'
-        f'<span style="color:#F0A500; font-size:0.82rem;">Full analysis in CounterPoint →</span>'
+        f'<span style="color:#f59e0b; font-size:0.82rem; font-style:italic;">'
+        f'Full analysis → CounterPoint tab</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -559,12 +681,24 @@ with tab1:
         if edge and off_player and def_player:
             st.markdown("---")
 
-            # Header
+            # Header with headshots
+            _off_hs = _headshot_html(off_pid, off_player.name, 100, 75) if off_pid else ""
+            _def_hs = _headshot_html(def_pid, def_player.name, 100, 75) if def_pid else ""
+            _off_meta = " · ".join(filter(None, [off_player.position, off_player.team]))
+            _def_meta = " · ".join(filter(None, [def_player.position, def_player.team]))
             st.markdown(
-                f'<div style="text-align:center; font-size:1.4rem; font-weight:700; color:#FAFAFA; margin-bottom:12px;">'
-                f'<span class="player-badge">{off_player.name}</span>'
-                f'<span style="color:#9CA3AF; margin: 0 12px;">vs</span>'
-                f'<span class="player-badge">{def_player.name}</span>'
+                f'<div class="matchup-vs-header">'
+                f'<div class="matchup-player-block">'
+                f'{_off_hs}'
+                f'<div class="name">{off_player.name}</div>'
+                f'<div class="meta">{_off_meta}</div>'
+                f'</div>'
+                f'<div class="matchup-vs-divider">vs</div>'
+                f'<div class="matchup-player-block">'
+                f'{_def_hs}'
+                f'<div class="name">{def_player.name}</div>'
+                f'<div class="meta">{_def_meta}</div>'
+                f'</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -723,8 +857,15 @@ with tab2:
         bio_col, stats_col, adv_col = st.columns([1.2, 1.4, 1.2])
 
         with bio_col:
+            # Headshot + name card
+            _pp_hs = _headshot_html(pid, player.name, 200, 150) if pid else ""
+            _pp_meta = " · ".join(filter(None, [player.position, player.team,
+                                                player.height,
+                                                f"{player.weight} lbs" if player.weight else None]))
             st.markdown(
-                f'<div class="player-badge">{player.name}</div>',
+                f'<div style="margin-bottom:12px;">{_pp_hs}</div>'
+                f'<div class="player-badge" style="font-size:1.15rem;">{player.name}</div>'
+                f'<div style="color:#94a3b8;font-size:0.85rem;margin:4px 0 10px;">{_pp_meta}</div>',
                 unsafe_allow_html=True,
             )
             bio = player.bio_dict()
@@ -1221,7 +1362,7 @@ with tab7:
 
         if _cp_analyse_btn or st.session_state.cp_matchup_drift:
             if _cp_analyse_btn:
-                # Compute drift for every offensive player in the cross-team matchups
+                # ── Step 1: Compute narrative drift for all offensive players ──
                 _cp_pids_to_run = list({m["off_pid"] for m in _cp_matchups})
                 _cp_prog = st.progress(0, text="Computing narrative drift…")
                 for _ci, _cpid in enumerate(_cp_pids_to_run):
@@ -1238,6 +1379,42 @@ with tab7:
                             _cp_result = None
                         st.session_state.cp_matchup_drift[_cpid] = _cp_result
                 _cp_prog.empty()
+
+                # ── Step 2: Batch AI analysis for all flagged players ──────────
+                if st.session_state.api_key:
+                    _batch_flagged = []
+                    for _m in _cp_matchups:
+                        _bpid   = _m["off_pid"]
+                        _bdrift = st.session_state.cp_matchup_drift.get(_bpid)
+                        if _bdrift and _bdrift.get("flagged"):
+                            _bpl = graph.players.get(_bpid)
+                            _batch_entry = {
+                                "name":     _m["off_player"],
+                                "off_team": _m["off_team"],
+                                "drift":    _bdrift,
+                            }
+                            if _bpl:
+                                if _bpl.position:
+                                    _batch_entry["position"] = _bpl.position
+                                if _bpl.height:
+                                    _batch_entry["height"] = _bpl.height
+                                if _bpl.ppg is not None:
+                                    _batch_entry["ppg"] = f"{_bpl.ppg:.1f}"
+                                if _bpl.usg_pct is not None:
+                                    _batch_entry["usage_rate"] = f"{_bpl.usg_pct:.1%}"
+                            _batch_flagged.append(_batch_entry)
+
+                    if _batch_flagged:
+                        with st.spinner("Generating AI analysis for flagged players…"):
+                            _ai_results = call_cp_analysis_batch(
+                                _batch_flagged, _cp_t1, _cp_t2,
+                                st.session_state.api_key,
+                            )
+                        for _m in _cp_matchups:
+                            _bpid  = _m["off_pid"]
+                            _pname = _m["off_player"]
+                            if _pname in _ai_results:
+                                st.session_state.cp_ai_text[_bpid] = _ai_results[_pname]
 
             # ──────────────────────────────────────────────────────────────────
             # SECTION 1 — Matchup Intelligence Panel
@@ -1260,16 +1437,27 @@ with tab7:
             else:
                 for _mi, _m in enumerate(_cp_matchups):
                     _off_pid  = _m["off_pid"]
+                    _def_pid  = _m["def_pid"]
                     _off_name = _m["off_player"]
                     _def_name = _m["def_player"]
                     _drift    = st.session_state.cp_matchup_drift.get(_off_pid)
 
+                    # Headshots
+                    _off_hs = _headshot_html(_off_pid, _off_name, 48, 36)
+                    _def_hs = _headshot_html(_def_pid, _def_name, 48, 36)
+
                     if _drift and _drift.get("flagged"):
                         _flag   = _drift["flag"]
-                        _color  = FLAG_COLOR.get(_flag, "#9CA3AF")
+                        _color  = FLAG_COLOR.get(_flag, "#94a3b8")
                         _flabel = FLAG_LABEL.get(_flag, "")
                         _stat   = _drift["max_drift_stat"]
                         _slbl   = CP_STAT_LABELS.get(_stat, _stat)
+
+                        # Use AI-generated text if available, else fall back to template
+                        _ai_entry  = st.session_state.cp_ai_text.get(_off_pid, {})
+                        _narrative = _ai_entry.get("narrative") or _drift["narrative"]
+                        _numbers   = _ai_entry.get("numbers_say") or _drift["numbers_say"]
+                        _coaching  = _ai_entry.get("coaching_implication") or _drift["coaching_impl"]
 
                         _cp_flagged.append({
                             "name":     _off_name,
@@ -1278,21 +1466,23 @@ with tab7:
                         })
 
                         st.markdown(
-                            f'<div class="cp-entry" style="background:#1A2035; '
+                            f'<div class="cp-entry" style="background:#131a2b; '
                             f'border-left: 4px solid {_color};">'
+                            f'<div class="cp-entry-header">'
+                            f'{_off_hs}'
+                            f'<div style="flex:1;">'
                             f'<div class="cp-player-name">{_off_name} '
-                            f'<span style="color:#9CA3AF; font-size:0.82rem; font-weight:400;">'
+                            f'<span style="color:#94a3b8; font-size:0.8rem; font-weight:400;">'
                             f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
-                            f'<div style="display:inline-block; background:{_color}33; '
-                            f'color:{_color}; border:1px solid {_color}; border-radius:4px; '
-                            f'padding:1px 8px; font-size:0.75rem; font-weight:700; '
-                            f'margin-bottom:6px;">{_flabel}</div>'
-                            f'<div class="cp-narrative"><b>The narrative:</b> '
-                            f'{_drift["narrative"]}</div>'
+                            f'<div style="display:inline-block; background:{_color}22; '
+                            f'color:{_color}; border:1px solid {_color}55; border-radius:5px; '
+                            f'padding:2px 9px; font-size:0.73rem; font-weight:700;">{_flabel}</div>'
+                            f'</div>'
+                            f'</div>'
+                            f'<div class="cp-narrative"><b>The narrative:</b> {_narrative}</div>'
                             f'<div class="cp-numbers" style="color:{_color};">'
-                            f'<b>The numbers say:</b> {_drift["numbers_say"]}</div>'
-                            f'<div class="cp-coaching"><b>Coaching implication:</b> '
-                            f'{_drift["coaching_impl"]}</div>'
+                            f'<b>The numbers say:</b> {_numbers}</div>'
+                            f'<div class="cp-coaching"><b>Coaching implication:</b> {_coaching}</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
@@ -1313,15 +1503,18 @@ with tab7:
                                 key=_spark_key,
                             )
                     elif _drift and not _drift.get("flagged"):
-                        # Stable player — show actual stat summary instead of generic message
+                        # Stable player — show actual stat summary
                         _stable_txt = _drift.get("stable_summary", "")
                         st.markdown(
-                            f'<div class="cp-entry" style="background:#1A2035; '
-                            f'border-left: 4px solid #2A3550;">'
+                            f'<div class="cp-entry" style="background:#131a2b; '
+                            f'border-left: 4px solid #1e293b;">'
+                            f'<div class="cp-entry-header">'
+                            f'{_off_hs}'
                             f'<div class="cp-player-name">{_off_name} '
-                            f'<span style="color:#9CA3AF; font-size:0.82rem; font-weight:400;">'
+                            f'<span style="color:#94a3b8; font-size:0.8rem; font-weight:400;">'
                             f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
-                            f'<div style="color:#6B7280; font-size:0.82rem;">'
+                            f'</div>'
+                            f'<div style="color:#475569; font-size:0.85rem;">'
                             f'{_stable_txt if _stable_txt else "Scouting report is holding up — no significant narrative drift detected."}'
                             f'</div>'
                             f'</div>',
@@ -1330,12 +1523,15 @@ with tab7:
                     else:
                         # No drift data computed yet
                         st.markdown(
-                            f'<div class="cp-entry" style="background:#1A2035; '
-                            f'border-left: 4px solid #2A3550;">'
+                            f'<div class="cp-entry" style="background:#131a2b; '
+                            f'border-left: 4px solid #1e293b;">'
+                            f'<div class="cp-entry-header">'
+                            f'{_off_hs}'
                             f'<div class="cp-player-name">{_off_name} '
-                            f'<span style="color:#9CA3AF; font-size:0.82rem; font-weight:400;">'
+                            f'<span style="color:#94a3b8; font-size:0.8rem; font-weight:400;">'
                             f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
-                            f'<div style="color:#6B7280; font-size:0.82rem;">'
+                            f'</div>'
+                            f'<div style="color:#475569; font-size:0.85rem;">'
                             f'No narrative drift detected — conventional scouting report is holding up.</div>'
                             f'</div>',
                             unsafe_allow_html=True,
@@ -1463,7 +1659,7 @@ with tab7:
                         if not _pl:
                             continue
                         _fl    = FLAG_LABEL.get(d["flag"], "")
-                        _col   = FLAG_COLOR.get(d["flag"], "#9CA3AF")
+                        _col   = FLAG_COLOR.get(d["flag"], "#94a3b8")
                         _sl    = CP_STAT_LABELS.get(d["max_drift_stat"], d["max_drift_stat"])
                         _ca    = d["career_avgs"].get(d["max_drift_stat"])
                         _cv    = d["current_vals"].get(d["max_drift_stat"])
@@ -1471,18 +1667,23 @@ with tab7:
                         _ca_s  = f"{_ca:{_fmt}}" if _ca is not None else "—"
                         _cv_s  = f"{_cv:{_fmt}}" if _cv is not None else "—"
                         _z     = d["max_drift_score"]
+                        _lb_hs = _headshot_html(pid, _pl.name, 48, 36)
                         st.markdown(
-                            f'<div class="cp-leaderboard-row">'
-                            f'<span style="color:#9CA3AF; font-size:0.82rem;">#{rank}</span>&nbsp;&nbsp;'
-                            f'<b style="color:#FAFAFA;">{_pl.name}</b>&nbsp;'
-                            f'<span style="color:#9CA3AF; font-size:0.82rem;">{_pl.team or ""}</span>'
+                            f'<div class="cp-leaderboard-row" style="display:flex;align-items:center;gap:12px;">'
+                            f'{_lb_hs}'
+                            f'<div style="flex:1;">'
+                            f'<span style="color:#475569; font-size:0.78rem;">#{rank}</span>&nbsp;'
+                            f'<b style="color:#f1f5f9;">{_pl.name}</b>&nbsp;'
+                            f'<span style="color:#94a3b8; font-size:0.8rem;">{_pl.team or ""}</span>'
                             f'&nbsp;&nbsp;'
-                            f'<span style="background:{_col}33; color:{_col}; border:1px solid {_col}; '
-                            f'border-radius:4px; padding:1px 6px; font-size:0.75rem;">{_fl}</span>'
+                            f'<span style="background:{_col}22; color:{_col}; border:1px solid {_col}55; '
+                            f'border-radius:5px; padding:2px 7px; font-size:0.73rem;">{_fl}</span>'
                             f'<br>'
-                            f'<span style="color:#9CA3AF; font-size:0.82rem;">Driving stat: '
-                            f'<b style="color:#D1D5DB;">{_sl}</b> — career {_ca_s} → this season {_cv_s} '
+                            f'<span style="color:#475569; font-size:0.8rem;">Driving stat: '
+                            f'<b style="color:#94a3b8; font-family:\'JetBrains Mono\',monospace;">{_sl}</b>'
+                            f' — career {_ca_s} → this season {_cv_s} '
                             f'({_z:+.1f}\u03c3)</span>'
+                            f'</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )

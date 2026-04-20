@@ -47,18 +47,84 @@ STAT_LABELS: Dict[str, str] = {
 LOWER_IS_BETTER = {"tov_pct"}
 
 # Claude model to use for CounterPoint API calls
-_CP_MODEL = "claude-sonnet-4-5"
+_CP_MODEL = "claude-sonnet-4-6"
+
+# ── Tactical context map ────────────────────────────────────────────────────────
+
+STAT_TO_TACTICAL_CONTEXT: Dict[str, Dict] = {
+    "fg3_pct": {
+        "tactical_question": (
+            "How should defenses adjust their closeout and screen coverage schemes "
+            "given this player's changed three-point shooting? Should they go over or under "
+            "screens, and how hard should they close out on catch-and-shoot opportunities?"
+        ),
+        "context_keys": ["position", "height", "usage_rate", "ast_pct"],
+    },
+    "ts_pct": {
+        "tactical_question": (
+            "Has this player's overall scoring efficiency changed enough that their defensive "
+            "assignment priority should be upgraded or downgraded? Does the efficiency shift "
+            "reflect better shot selection, improved finishing, or a changed role?"
+        ),
+        "context_keys": ["position", "usage_rate", "ppg"],
+    },
+    "efg_pct": {
+        "tactical_question": (
+            "Is this player getting better or worse shots, or making or missing the same shots? "
+            "What does that mean for how much help defense should rotate toward them, "
+            "and does it change how the defense loads to their side of the floor?"
+        ),
+        "context_keys": ["position", "ppg", "usage_rate"],
+    },
+    "ppg": {
+        "tactical_question": (
+            "This player's scoring volume has shifted significantly. What offensive role did they "
+            "play before versus now, and how should the defensive coverage assignment and "
+            "help-side loading change in response?"
+        ),
+        "context_keys": ["position", "usage_rate", "ast_pct"],
+    },
+    "ast_pg": {
+        "tactical_question": (
+            "This player's playmaking role has changed. Should the defense key on them primarily "
+            "as a passer or scorer, and how does that affect pick-and-roll coverage schemes "
+            "and help rotations when they have the ball?"
+        ),
+        "context_keys": ["position", "usage_rate", "ppg"],
+    },
+    "tov_pct": {
+        "tactical_question": (
+            "This player's ball security has changed materially. Should the defense increase "
+            "or decrease aggressive ball pressure, trapping actions, and forcing tempo — "
+            "and is the change real enough to build a game plan around?"
+        ),
+        "context_keys": ["position", "usage_rate", "ast_pct"],
+    },
+    "ft_rate": {
+        "tactical_question": (
+            "This player is drawing fouls at a significantly different rate. Is this a real "
+            "tactical shift in how they attack the basket, or a statistical artifact? "
+            "How should defenders adjust their foul discipline when guarding them?"
+        ),
+        "context_keys": ["position", "usage_rate", "ppg"],
+    },
+}
 
 # ── System prompts ─────────────────────────────────────────────────────────────
 
 _BRIEFING_SYSTEM = (
-    "You are an NBA front office analyst writing a pre-series intelligence briefing called CounterPoint. "
-    "Your job is to identify players whose current statistical profile diverges from their established reputation. "
-    "For each flagged player explain: (1) what the conventional scouting narrative says, "
-    "(2) what the last 1-2 seasons of data actually show, and "
-    "(3) the specific tactical implication for the opposing coaching staff. "
-    "Be direct, specific, and cite the actual numbers provided. "
-    "Never reference players not in the data provided."
+    "You are an NBA front office analyst writing an internal pre-series intelligence briefing called CounterPoint. "
+    "Your audience is coaching staff who need to make tactical decisions. "
+    "Rules: "
+    "1. Never state a drift number without explaining WHY the player's profile changed — connect it to "
+    "a physical attribute, skill, or schematic factor. "
+    "2. For CounterPoint-specific analysis, always frame the coaching implication as a decision that needs to change. "
+    "Example: 'Film from 2023-24 shows defenses going under screens on Gordon — his 3P% has risen from 28% to 37%, "
+    "meaning going under now concedes open threes at a rate that swings expected points per possession by +0.15.' "
+    "3. Every Strategic Recommendation must be a specific action: name the play type, coverage scheme, or "
+    "assignment change — not a general concept like 'exploit the mismatch.' "
+    "4. Be direct and cite the actual numbers provided. "
+    "5. Never reference players not in the data provided."
 )
 
 _QA_SYSTEM = (
@@ -468,9 +534,9 @@ def _build_stable_summary(
 # ── Flag colour helpers ────────────────────────────────────────────────────────
 
 FLAG_COLOR = {
-    "better_than_reputation": "#00875A",
-    "worse_than_reputation":  "#C8102E",
-    "role_shift":             "#F0A500",
+    "better_than_reputation": "#10b981",
+    "worse_than_reputation":  "#ef4444",
+    "role_shift":             "#f59e0b",
 }
 
 FLAG_LABEL = {
@@ -845,6 +911,102 @@ def call_cp_qa(
         return "❌ Invalid Anthropic API key. Please check your key in the sidebar."
     except Exception as e:
         return f"❌ Query failed: {e}"
+
+
+def call_cp_analysis_batch(
+    flagged_players: List[Dict],
+    team1: str,
+    team2: str,
+    api_key: str,
+) -> Dict[str, Dict]:
+    """
+    Generate AI-powered, player-specific CounterPoint analysis for all flagged players
+    in a single API call.  Returns a dict keyed by player name with per-player analysis.
+
+    Each flagged player dict must have:
+      "name", "off_team", "drift" (the compute_drift result dict)
+    Player bio fields ("position", "height") are optional — included when present.
+
+    Returns: {player_name: {"narrative": ..., "numbers_say": ..., "coaching_implication": ...}}
+    If the call fails, returns {} so callers fall back to template text.
+    """
+    if not flagged_players or not api_key:
+        return {}
+
+    player_contexts = []
+    for fp in flagged_players:
+        drift = fp.get("drift", {})
+        stat  = drift.get("max_drift_stat", "")
+        tc    = STAT_TO_TACTICAL_CONTEXT.get(stat, {})
+        tq    = tc.get("tactical_question", "How should the opposing team adjust their coverage?")
+
+        ca    = drift.get("career_avgs", {}).get(stat)
+        cv    = drift.get("current_vals", {}).get(stat)
+        p2    = drift.get("prior_2_vals", {}).get(stat, [])
+        z     = drift.get("max_drift_score", 0.0)
+        flag  = drift.get("flag", "")
+
+        ctx = {
+            "player_name":   fp["name"],
+            "team":          fp.get("off_team", ""),
+            "flagged_stat":  STAT_LABELS.get(stat, stat),
+            "flag_type":     FLAG_LABEL.get(flag, flag),
+            "career_avg":    _fmt_val(stat, ca) if ca is not None else "—",
+            "prior_2_seasons": [_fmt_val(stat, v) for v in p2] if p2 else [],
+            "current_season": _fmt_val(stat, cv) if cv is not None else "—",
+            "drift_z_score": f"{z:+.1f}sigma",
+            "tactical_question": tq,
+        }
+        # Optional bio fields from fp
+        for bio_field in ("position", "height", "ppg", "usage_rate"):
+            if bio_field in fp:
+                ctx[bio_field] = fp[bio_field]
+
+        player_contexts.append(ctx)
+
+    import json
+    user_content = (
+        f"Generate CounterPoint analysis for the following flagged players "
+        f"in the {team1} vs {team2} matchup.\n\n"
+        "For EACH player, write exactly 3 lines:\n"
+        "1. THE NARRATIVE: One sentence describing what conventional scouting wisdom says about "
+        "this player regarding the flagged stat. Be specific to THIS player — reference their "
+        "position, playing style, and established reputation. No generic language.\n"
+        "2. THE NUMBERS SAY: One sentence stating the stat trajectory (career → recent → current) "
+        "and what it means for THIS player specifically, given their role and physical profile.\n"
+        "3. COACHING IMPLICATION: One concrete, actionable sentence answering the tactical question "
+        "provided. Name a specific scheme: a play type, a coverage adjustment, or an assignment "
+        "change. Not a general observation.\n\n"
+        f"PLAYERS:\n{json.dumps(player_contexts, indent=2)}\n\n"
+        "Respond ONLY with a JSON array. Each element: "
+        '{"player_name": "...", "narrative": "...", "numbers_say": "...", "coaching_implication": "..."}'
+    )
+
+    _BATCH_SYSTEM = (
+        "You are an NBA front office analyst. Write player-specific tactical analysis. "
+        "Every coaching implication must name a specific play type, scheme, or coverage adjustment — "
+        "never a general observation. Connect each stat change to the player's physical profile or role. "
+        "Respond only with the requested JSON array, no other text."
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model=_CP_MODEL,
+            max_tokens=1800,
+            system=_sanitize(_BATCH_SYSTEM),
+            messages=[{"role": "user", "content": _sanitize(user_content)}],
+        )
+        raw = msg.content[0].text.strip()
+        # Extract JSON array even if wrapped in markdown code block
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed: List[Dict] = json.loads(raw)
+        return {item["player_name"]: item for item in parsed if "player_name" in item}
+    except Exception:
+        return {}
 
 
 # ── Suggested question chips ───────────────────────────────────────────────────

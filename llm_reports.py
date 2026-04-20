@@ -108,13 +108,20 @@ def _fmt_similar_defenders(similar_list: List[Dict], top_n: int = 5) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
-    "You are an NBA scout and analytics expert. Write clear, insightful scouting reports "
-    "grounded in the data provided. Use basketball terminology naturally. "
-    "Be specific—cite the PPP numbers, name the toughest and easiest matchups. "
-    "Keep the tone professional but accessible to coaches and informed fans. "
-    "Structure the report with short labeled sections. Aim for 250–400 words. "
-    "CRITICAL: When roster data is provided, you must only reference players who appear on "
-    "those rosters. Never mention a player who is not listed in the provided roster data."
+    "You are an NBA front office analyst writing an internal scouting document. "
+    "Your audience is coaching staff who need to make tactical decisions, not fans who want to read about stats. "
+    "Rules: "
+    "1. Never state a PPP or efficiency number without immediately explaining WHY the player produced that number. "
+    "Connect it to a physical attribute (height, wingspan, lateral speed), a skill (release point, handle, passing vision), "
+    "or a schematic factor (coverage type, screening action, transition vs. halfcourt). "
+    "2. Group matchup analysis by defensive archetype, not individual names. "
+    "Example: 'Markkanen torches guards and drop-coverage bigs because his 7-1 frame with a perimeter skill set creates "
+    "an impossible closeout problem.' Then list the specific players who fit that archetype. "
+    "3. When describing a player's struggles, identify the defensive archetype that causes problems. "
+    "4. Every Strategic Recommendation must be a specific action, not a general concept. "
+    "Bad: 'Exploit mismatches.' Good: 'Run Spain pick-and-rolls with Markkanen as the screener to force a guard switch.' "
+    "5. Never reference players not in the provided roster data. "
+    "Structure the report with short labeled sections. Aim for 300-450 words."
 )
 
 
@@ -147,8 +154,9 @@ def generate_matchup_report(
     prompt = (
         f"Generate a scouting report for the matchup between "
         f"{off_player.name} (offense) and {def_player.name} (defense). "
-        f"Analyze who has the advantage, why, and what each player should do. "
-        f"Cite specific numbers from the data.\n\n{context}"
+        f"For each efficiency number cited, explain the physical or schematic reason behind it. "
+        f"Identify the defensive archetype that either neutralizes or struggles against {off_player.name}. "
+        f"End with one concrete, specific strategic recommendation for the defending team.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
 
@@ -171,8 +179,10 @@ def generate_player_profile_report(
     prompt = (
         f"Generate a scouting report for {player.name} focusing on their "
         f"{'offensive' if role == 'offense' else 'defensive'} matchup profile. "
-        f"Identify patterns, strengths, weaknesses, and strategic recommendations. "
-        f"Cite specific matchup data.\n\n{context}"
+        f"For each pattern identified, explain WHY it happens — connect it to their physical profile, "
+        f"skill set, or the schematic contexts where they thrive or struggle. "
+        f"Identify the defensive archetype that gives them the most trouble and explain the mechanical reason. "
+        f"End with one specific, actionable scheme recommendation.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
 
@@ -230,9 +240,11 @@ def generate_team_matchup_report(
 
     prompt = (
         f"Generate a comprehensive team matchup scouting report for {team1_name} vs {team2_name}. "
-        f"Analyze the statistical advantages and disadvantages for each team, identify which "
-        f"individual player matchups are most critical based on the head-to-head data, and provide "
-        f"strategic recommendations for both teams. Cite specific numbers from the data.\n\n{context}"
+        f"For each advantage cited, explain the schematic or physical reason behind it — not just the number. "
+        f"Group the individual matchup analysis by defensive archetype: which archetypes from each roster "
+        f"create exploitation opportunities, and which neutralize threats. "
+        f"Each strategic recommendation must be a specific scheme action (e.g., 'Run weak-side DHO actions "
+        f"to force switches onto the center'). Cite specific numbers.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
 
@@ -284,12 +296,13 @@ Projected series win probability: {team1_name} {series_prob:.0%} / {team2_name} 
     )
 
     prompt = (
-        f"You are an NBA analyst. Generate a concise 'Keys to the Series' breakdown for the "
-        f"first-round playoff matchup between #{seed1} {team1_name} and #{seed2} {team2_name}. "
-        f"Identify 3-4 specific keys that will determine who wins the series, "
-        f"what each team needs to do to advance, and the most important individual matchups. "
-        f"Be specific about stat differentials and strategic advantages.{roster_instruction} "
-        f"Keep it under 300 words.\n\n{context}"
+        f"Generate a 'Keys to the Series' breakdown for #{seed1} {team1_name} vs #{seed2} {team2_name}. "
+        f"Identify 3-4 specific keys. For each key: (1) state the tactical decision that must be made, "
+        f"(2) cite the specific stat or matchup data that makes it pivotal, "
+        f"(3) explain WHY it matters physically or schematically — not just what the number says. "
+        f"Each strategic recommendation must be a specific action: name the play type, "
+        f"the screening action, or the coverage scheme — not 'exploit the mismatch'.{roster_instruction} "
+        f"Keep it under 350 words.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
 
@@ -417,7 +430,7 @@ def _call_anthropic(user_prompt: str, api_key: str) -> str:
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             system=_sanitize(SYSTEM_PROMPT),
             messages=[{"role": "user", "content": _sanitize(user_prompt)}],

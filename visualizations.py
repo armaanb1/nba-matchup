@@ -1,12 +1,12 @@
 """
 Professional Plotly visualizations for the NBA Matchup Network.
 
-Color palette:
-  Navy   #1D428A   (primary nodes / bars)
-  Red    #C8102E   (opponent nodes / warning)
-  Gold   #F0A500   (center player / highlight)
-  Green  #00875A   (good defense)
-  Gray   #6B7280   (neutral)
+Color palette (aligned with app.py CSS):
+  Blue   #3b82f6   (primary / Team 1)
+  Amber  #f59e0b   (secondary / CounterPoint accent)
+  Green  #10b981   (positive / better-than-reputation)
+  Red    #ef4444   (negative / worse-than-reputation)
+  Gray   #475569   (neutral)
 """
 from __future__ import annotations
 
@@ -22,19 +22,21 @@ from models import MatchupGraph, Player
 # --------------------------------------------------
 # Design constants
 # --------------------------------------------------
-NAVY = "#1D428A"
-RED = "#C8102E"
-GOLD = "#F0A500"
-GREEN = "#00875A"
-LIGHT_GRAY = "#F8F9FA"
-DARK_BG = "#0E1117"
-CARD_BG = "#1A2035"
-FONT_COLOR = "#FAFAFA"
+NAVY = "#3b82f6"       # primary blue (replaces #1D428A)
+RED = "#ef4444"        # negative red
+GOLD = "#f59e0b"       # amber accent
+GREEN = "#10b981"      # positive green
+LIGHT_GRAY = "#94a3b8"
+DARK_BG = "#0a0e17"
+CARD_BG = "#131a2b"
+FONT_COLOR = "#f1f5f9"
+BORDER_COLOR = "#1e293b"
+MUTED = "#475569"
 
 LAYOUT_DEFAULTS = dict(
     paper_bgcolor=DARK_BG,
     plot_bgcolor=DARK_BG,
-    font=dict(family="Inter, Helvetica, Arial", size=12, color=FONT_COLOR),
+    font=dict(family="'DM Sans', 'Inter', Arial, sans-serif", size=12, color=FONT_COLOR),
     margin=dict(l=40, r=40, t=60, b=40),
 )
 
@@ -535,11 +537,12 @@ def plot_ppp_heatmap(graph_obj: MatchupGraph, top_n: int = 15) -> go.Figure:
 
 def plot_team_comparison_bars(t1: dict, t2: dict, team1: str, team2: str) -> go.Figure:
     """
-    Grouped horizontal bar chart comparing two teams across key stats.
-    Lower-is-better stats (Def Rtg, TOV%) are inverted so longer bar = better.
-    Team1 bars in NAVY, Team2 bars in RED.
+    Center-aligned diverging horizontal bar chart comparing two teams.
+    Team 1 bars extend LEFT from center (blue), Team 2 bars extend RIGHT (amber).
+    The team with the statistical advantage on each row is highlighted; the other
+    is rendered in a muted slate so the winner stands out instantly.
+    Lower-is-better stats are flipped so longer bar always = better.
     """
-    # (label, t1_key, t2_key, invert, format_pct)
     stat_defs = [
         ("Off Rtg",  "OFF_RATING",  False, False),
         ("Def Rtg",  "DEF_RATING",  True,  False),
@@ -551,72 +554,100 @@ def plot_team_comparison_bars(t1: dict, t2: dict, team1: str, team2: str) -> go.
         ("TS%",      "TS_PCT",      False, True),
     ]
 
-    labels, vals1, vals2, texts1, texts2 = [], [], [], [], []
-
+    rows: list = []
     for label, key, invert, as_pct in stat_defs:
         v1 = t1.get(key)
         v2 = t2.get(key)
         if v1 is None or v2 is None:
             continue
-
         v1f, v2f = float(v1), float(v2)
-
+        t1_txt = f"{v1f:.1%}" if as_pct else f"{v1f:.1f}"
+        t2_txt = f"{v2f:.1%}" if as_pct else f"{v2f:.1f}"
         if as_pct:
-            t1_txt = f"{v1f:.1%}"
-            t2_txt = f"{v2f:.1%}"
-            # Scale to 0-100 for consistent bar sizing with non-pct stats
-            v1f_display = v1f * 100
-            v2f_display = v2f * 100
-        else:
-            t1_txt = f"{v1f:.1f}"
-            t2_txt = f"{v2f:.1f}"
-            v1f_display = v1f
-            v2f_display = v2f
-
+            v1f, v2f = v1f * 100, v2f * 100
         if invert:
-            # Flip so higher bar = better (lower raw value is better)
-            max_val = max(v1f_display, v2f_display) + 1e-9
-            v1f_display = max_val - v1f_display + max_val * 0.1
-            v2f_display = max_val - v2f_display + max_val * 0.1
+            v1f, v2f = -v1f, -v2f
+        rows.append((label, v1f, v2f, t1_txt, t2_txt))
 
-        labels.append(label)
-        vals1.append(v1f_display)
-        vals2.append(v2f_display)
-        texts1.append(t1_txt)
-        texts2.append(t2_txt)
+    if not rows:
+        return go.Figure()
+
+    labels    = [r[0] for r in rows]
+    # For the diverging layout: t1 extends left (negative), t2 extends right (positive)
+    # Normalise each row so the better score = ±1.0 and the worse = a fraction of that
+    left_vals, right_vals = [], []
+    left_cols, right_cols = [], []
+    left_texts, right_texts = [], []
+
+    for label, v1, v2, t1_txt, t2_txt in rows:
+        mx = max(abs(v1), abs(v2), 1e-9)
+        # Negative = left (Team 1), Positive = right (Team 2)
+        lv = -(abs(v1) / mx)
+        rv =  (abs(v2) / mx)
+        left_vals.append(lv)
+        right_vals.append(rv)
+        left_texts.append(t1_txt)
+        right_texts.append(t2_txt)
+        # Highlight the winner; mute the loser
+        t1_wins = v1 >= v2
+        left_cols.append(NAVY if t1_wins else MUTED)
+        right_cols.append(GOLD if not t1_wins else MUTED)
 
     fig = go.Figure()
+
+    # Team 1 — left bars
     fig.add_trace(go.Bar(
         name=team1,
-        y=labels, x=vals1,
+        y=labels, x=left_vals,
         orientation="h",
-        marker_color=NAVY,
-        text=texts1,
+        marker_color=left_cols,
+        text=left_texts,
         textposition="outside",
         textfont=dict(size=11, color=FONT_COLOR),
-        offsetgroup=0,
+        hovertemplate="%{text}<extra>" + team1 + "</extra>",
     ))
+
+    # Team 2 — right bars
     fig.add_trace(go.Bar(
         name=team2,
-        y=labels, x=vals2,
+        y=labels, x=right_vals,
         orientation="h",
-        marker_color=RED,
-        text=texts2,
+        marker_color=right_cols,
+        text=right_texts,
         textposition="outside",
         textfont=dict(size=11, color=FONT_COLOR),
-        offsetgroup=1,
+        hovertemplate="%{text}<extra>" + team2 + "</extra>",
     ))
 
     fig.update_layout(
-        barmode="group",
-        height=500,
-        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-        yaxis=dict(gridcolor="#2A3550", tickfont=dict(size=12, color=FONT_COLOR)),
-        legend=dict(
-            bgcolor=CARD_BG, bordercolor="#374151", borderwidth=1,
-            font=dict(color=FONT_COLOR, size=13),
-            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+        barmode="overlay",
+        height=520,
+        xaxis=dict(
+            showgrid=False, showticklabels=False, zeroline=True,
+            zerolinecolor=BORDER_COLOR, zerolinewidth=2,
+            range=[-1.55, 1.55],
         ),
+        yaxis=dict(
+            gridcolor=BORDER_COLOR,
+            tickfont=dict(size=12, color=FONT_COLOR, family="'DM Sans', Arial"),
+        ),
+        legend=dict(
+            bgcolor=CARD_BG, bordercolor=BORDER_COLOR, borderwidth=1,
+            font=dict(color=FONT_COLOR, size=13),
+            orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5,
+        ),
+        annotations=[
+            dict(
+                x=-0.78, y=1.04, xref="paper", yref="paper",
+                text=f"◀  {team1}", showarrow=False,
+                font=dict(size=12, color=NAVY),
+            ),
+            dict(
+                x=0.78, y=1.04, xref="paper", yref="paper",
+                text=f"{team2}  ▶", showarrow=False,
+                font=dict(size=12, color=GOLD),
+            ),
+        ],
         title=dict(text=f"Team Comparison — {team1} vs {team2}",
                    font=dict(size=15, color=FONT_COLOR)),
         **LAYOUT_DEFAULTS,
