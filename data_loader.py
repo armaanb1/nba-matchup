@@ -758,6 +758,92 @@ def get_team_roster(
     return _parse_nba_result_set(data, idx=0)
 
 
+def get_player_shot_chart(
+    player_id: int,
+    season: str = "2025-26",
+    season_type: str = "Regular Season",
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Fetch shot-by-shot chart data for a player from shotchartdetail.
+
+    Returns a DataFrame with columns including:
+      LOC_X, LOC_Y, SHOT_ZONE_BASIC, SHOT_ZONE_AREA, SHOT_ZONE_RANGE,
+      SHOT_MADE_FLAG, SHOT_DISTANCE, ACTION_TYPE, SHOT_TYPE
+
+    Coordinates are in 10ths of feet; basket is at (0, 0).
+    Cached to data/cache/shotchart_{player_id}_{season}_{safe_type}.json
+    """
+    safe_season = season.replace("-", "_")
+    safe_type = season_type.replace(" ", "_")
+    cache_path = CACHE_DIR / f"shotchart_{player_id}_{safe_season}_{safe_type}.json"
+
+    season_type_enc = season_type.replace(" ", "+")
+    url = (
+        "https://stats.nba.com/stats/shotchartdetail"
+        f"?PlayerID={player_id}"
+        f"&Season={season}"
+        f"&SeasonType={season_type_enc}"
+        f"&ContextMeasure=FGA"
+        f"&TeamID=0"
+        f"&GameID="
+        f"&LeagueID=00"
+        f"&PlayerPosition="
+        f"&DateFrom="
+        f"&DateTo="
+        f"&GameSegment="
+        f"&LastNGames=0"
+        f"&Location="
+        f"&Month=0"
+        f"&OpponentTeamID=0"
+        f"&Outcome="
+        f"&Period=0"
+        f"&RookieYear="
+        f"&VsConference="
+        f"&VsDivision="
+    )
+    data = _fetch_nba_direct(url, cache_path, force_refresh=force_refresh)
+    if not data:
+        return pd.DataFrame()
+    # resultSets[0] = shot chart data; resultSets[1] = league average zones
+    return _parse_nba_result_set(data, idx=0)
+
+
+def get_player_shot_zones(
+    player_id: int,
+    season: str = "2025-26",
+    season_type: str = "Regular Season",
+    force_refresh: bool = False,
+) -> Dict[str, Dict]:
+    """
+    Aggregate shot chart data by SHOT_ZONE_BASIC.
+
+    Returns a dict keyed by zone name:
+      {zone: {"fga": int, "fgm": int, "pct": float, "freq": float}}
+    where freq = fraction of total FGA from that zone.
+    Returns {} if no data is available.
+    """
+    df = get_player_shot_chart(player_id, season, season_type, force_refresh)
+    if df.empty or "SHOT_ZONE_BASIC" not in df.columns:
+        return {}
+
+    total_fga = len(df)
+    if total_fga == 0:
+        return {}
+
+    result = {}
+    for zone, group in df.groupby("SHOT_ZONE_BASIC"):
+        fga = len(group)
+        fgm = int(group["SHOT_MADE_FLAG"].sum()) if "SHOT_MADE_FLAG" in group.columns else 0
+        result[zone] = {
+            "fga": fga,
+            "fgm": fgm,
+            "pct": fgm / fga if fga > 0 else 0.0,
+            "freq": fga / total_fga,
+        }
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

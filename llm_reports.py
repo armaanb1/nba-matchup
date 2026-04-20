@@ -91,6 +91,41 @@ def _fmt_neighborhood_summary(rows: List[Dict], role: str, top_n: int = 5) -> st
     return "\n".join(lines)
 
 
+def _fmt_shot_zones(zone_summary: Dict, player_name: str) -> str:
+    """Format shot zone summary dict into LLM-readable context string."""
+    if not zone_summary:
+        return ""
+
+    # Sort zones by frequency descending
+    sorted_zones = sorted(zone_summary.items(), key=lambda x: x[1]["freq"], reverse=True)
+
+    lines = [f"{player_name} shot distribution (FGA frequency + FG%):"]
+    for zone, stats in sorted_zones:
+        fga = stats["fga"]
+        fgm = stats["fgm"]
+        pct = stats["pct"]
+        freq = stats["freq"]
+        lines.append(
+            f"  • {zone}: {freq:.0%} of FGA ({fgm}/{fga}, {pct:.1%} FG%)"
+        )
+
+    # Highlight corner 3 vs above-break 3 if both present
+    corner_3 = zone_summary.get("Left Corner 3", {})
+    corner_3r = zone_summary.get("Right Corner 3", {})
+    atb_3 = zone_summary.get("Above the Break 3", {})
+    if (corner_3 or corner_3r) and atb_3:
+        c3_fga = corner_3.get("fga", 0) + corner_3r.get("fga", 0)
+        c3_fgm = corner_3.get("fgm", 0) + corner_3r.get("fgm", 0)
+        c3_pct = c3_fgm / c3_fga if c3_fga > 0 else 0
+        atb_pct = atb_3.get("pct", 0)
+        lines.append(
+            f"  ↳ Corner 3 combined: {c3_fga} FGA at {c3_pct:.1%} — "
+            f"Above-break 3: {atb_3.get('fga', 0)} FGA at {atb_pct:.1%}"
+        )
+
+    return "\n".join(lines)
+
+
 def _fmt_similar_defenders(similar_list: List[Dict], top_n: int = 5) -> str:
     if not similar_list:
         return "No similar defenders found."
@@ -135,8 +170,21 @@ def generate_matchup_report(
     off_neighborhood: List[Dict],
     def_neighborhood: List[Dict],
     api_key: str,
+    off_shot_zones: Optional[Dict] = None,
+    def_shot_zones: Optional[Dict] = None,
 ) -> str:
     """Generate a scouting report for a specific head-to-head matchup."""
+    off_zone_ctx = _fmt_shot_zones(off_shot_zones or {}, off_player.name)
+    def_zone_ctx = _fmt_shot_zones(def_shot_zones or {}, def_player.name)
+
+    zone_section = ""
+    if off_zone_ctx or def_zone_ctx:
+        zone_section = "\n\n=== SHOT DISTRIBUTION ==="
+        if off_zone_ctx:
+            zone_section += f"\n{off_zone_ctx}"
+        if def_zone_ctx:
+            zone_section += f"\n\n{def_zone_ctx}"
+
     context = f"""
 === OFFENSIVE PLAYER ===
 {_fmt_player_bio(off_player)}
@@ -151,14 +199,22 @@ def generate_matchup_report(
 {_fmt_neighborhood_summary(off_neighborhood, role='offense')}
 
 === {def_player.name.upper()} DEFENSIVE CONTEXT ===
-{_fmt_neighborhood_summary(def_neighborhood, role='defense')}
+{_fmt_neighborhood_summary(def_neighborhood, role='defense')}{zone_section}
 """.strip()
+
+    shot_zone_instruction = (
+        " Reference the shot distribution data to explain where on the floor the offense attacks "
+        "and how the defense should position — specifically call out corner 3 vs. above-break 3 "
+        "tendencies and paint frequency."
+        if (off_zone_ctx or def_zone_ctx) else ""
+    )
 
     prompt = (
         f"Generate a scouting report for the matchup between "
         f"{off_player.name} (offense) and {def_player.name} (defense). "
         f"For each efficiency number cited, explain the physical or schematic reason behind it. "
-        f"Identify the defensive archetype that either neutralizes or struggles against {off_player.name}. "
+        f"Identify the defensive archetype that either neutralizes or struggles against {off_player.name}."
+        f"{shot_zone_instruction} "
         f"End with one concrete, specific strategic recommendation for the defending team.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
@@ -169,21 +225,32 @@ def generate_player_profile_report(
     role: str,
     neighborhood: List[Dict],
     api_key: str,
+    shot_zones: Optional[Dict] = None,
 ) -> str:
     """Generate a player scouting report based on their full matchup profile."""
+    zone_ctx = _fmt_shot_zones(shot_zones or {}, player.name)
+    zone_section = f"\n\n=== SHOT DISTRIBUTION ===\n{zone_ctx}" if zone_ctx else ""
+
     context = f"""
 === PLAYER PROFILE ===
 {_fmt_player_bio(player)}
 
 === MATCHUP NEIGHBORHOOD ({role.upper()}) ===
-{_fmt_neighborhood_summary(neighborhood, role=role, top_n=6)}
+{_fmt_neighborhood_summary(neighborhood, role=role, top_n=6)}{zone_section}
 """.strip()
+
+    shot_zone_instruction = (
+        " Use the shot distribution data to specify exactly where on the floor the player attacks "
+        "or is attacked — corner 3 vs. above-break 3 tendencies, paint frequency, mid-range reliance."
+        if zone_ctx else ""
+    )
 
     prompt = (
         f"Generate a scouting report for {player.name} focusing on their "
         f"{'offensive' if role == 'offense' else 'defensive'} matchup profile. "
         f"For each pattern identified, explain WHY it happens — connect it to their physical profile, "
-        f"skill set, or the schematic contexts where they thrive or struggle. "
+        f"skill set, or the schematic contexts where they thrive or struggle."
+        f"{shot_zone_instruction} "
         f"Identify the defensive archetype that gives them the most trouble and explain the mechanical reason. "
         f"End with one specific, actionable scheme recommendation.\n\n{context}"
     )
@@ -436,9 +503,13 @@ def _call_anthropic(user_prompt: str, api_key: str) -> str:
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=_sanitize(SYSTEM_PROMPT),
-            messages=[{"role": "user", "content": _sanitize(user_prompt)}],
+            messages=[
+                {"role": "user", "content": _sanitize(user_prompt)},
+                {"role": "assistant", "content": "**"},
+            ],
         )
-        return message.content[0].text
+        # Prepend the bold marker we used as prefill so the section heading renders correctly
+        return "**" + message.content[0].text
     except anthropic.AuthenticationError:
         return "❌ Invalid Anthropic API key. Please check your key in the sidebar."
     except anthropic.RateLimitError:

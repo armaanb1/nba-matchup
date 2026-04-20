@@ -853,3 +853,167 @@ def plot_sparkline(
         ),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Shot Chart
+# ---------------------------------------------------------------------------
+
+def _draw_court_shapes() -> List[Dict]:
+    """Return a list of Plotly shape dicts for a half-court outline."""
+    import math
+
+    shapes = []
+
+    def arc_points(cx, cy, r, angle_start_deg, angle_end_deg, n=60):
+        angles = np.linspace(math.radians(angle_start_deg), math.radians(angle_end_deg), n)
+        xs = [cx + r * math.cos(a) for a in angles]
+        ys = [cy + r * math.sin(a) for a in angles]
+        return xs, ys
+
+    # Court boundary (half court)
+    shapes.append(dict(
+        type="rect", x0=-250, y0=-47.5, x1=250, y1=422.5,
+        line=dict(color=BORDER_COLOR, width=1.5), fillcolor="rgba(0,0,0,0)",
+    ))
+
+    # Paint (key) — outer box
+    shapes.append(dict(
+        type="rect", x0=-80, y0=-47.5, x1=80, y1=142.5,
+        line=dict(color=BORDER_COLOR, width=1.5), fillcolor="rgba(19,26,43,0.6)",
+    ))
+
+    # Free throw lane (inner)
+    shapes.append(dict(
+        type="rect", x0=-60, y0=-47.5, x1=60, y1=142.5,
+        line=dict(color=BORDER_COLOR, width=1), fillcolor="rgba(0,0,0,0)",
+    ))
+
+    # Free throw circle (top half)
+    ft_xs, ft_ys = arc_points(0, 142.5, 60, 0, 180)
+    shapes.append(dict(
+        type="path",
+        path="M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in zip(ft_xs, ft_ys)),
+        line=dict(color=BORDER_COLOR, width=1.5), fillcolor="rgba(0,0,0,0)",
+    ))
+
+    # Restricted area arc (~40 inches = ~40 units radius from basket)
+    ra_xs, ra_ys = arc_points(0, 0, 40, 0, 180)
+    shapes.append(dict(
+        type="path",
+        path="M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in zip(ra_xs, ra_ys)),
+        line=dict(color=BORDER_COLOR, width=1.5), fillcolor="rgba(0,0,0,0)",
+    ))
+
+    # 3-point arc — straight side lines + arc
+    # Side 3-pt lines
+    shapes.append(dict(type="line", x0=-220, y0=-47.5, x1=-220, y1=92.5,
+                       line=dict(color=BORDER_COLOR, width=1.5)))
+    shapes.append(dict(type="line", x0=220, y0=-47.5, x1=220, y1=92.5,
+                       line=dict(color=BORDER_COLOR, width=1.5)))
+
+    # 3-point arc (radius ~237.5 from basket at 0,0)
+    tp_xs, tp_ys = arc_points(0, 0, 237.5, 22.0, 158.0)
+    shapes.append(dict(
+        type="path",
+        path="M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in zip(tp_xs, tp_ys)),
+        line=dict(color=BORDER_COLOR, width=1.5), fillcolor="rgba(0,0,0,0)",
+    ))
+
+    # Basket backboard
+    shapes.append(dict(type="line", x0=-30, y0=-7.5, x1=30, y1=-7.5,
+                       line=dict(color=FONT_COLOR, width=2)))
+
+    return shapes
+
+
+_ZONE_COLOR_MAP = {
+    "Restricted Area":         "#10b981",   # green — high efficiency
+    "In The Paint (Non-RA)":   "#f59e0b",   # amber
+    "Mid-Range":               "#ef4444",   # red — low efficiency
+    "Left Corner 3":           "#3b82f6",   # blue
+    "Right Corner 3":          "#3b82f6",   # blue
+    "Above the Break 3":       "#a855f7",   # purple
+    "Backcourt":               "#475569",   # muted
+}
+
+
+def plot_shot_chart(shot_df, player_name: str) -> go.Figure:
+    """
+    Scatter shot chart on a half-court diagram.
+
+    shot_df must have columns: LOC_X, LOC_Y, SHOT_MADE_FLAG, SHOT_ZONE_BASIC
+    Made shots = filled circle; missed shots = open X marker.
+    Each zone gets a distinct color.
+    """
+    if shot_df.empty or "LOC_X" not in shot_df.columns:
+        fig = go.Figure()
+        fig.update_layout(
+            title="No shot chart data available",
+            **LAYOUT_DEFAULTS,
+        )
+        return fig
+
+    made = shot_df[shot_df["SHOT_MADE_FLAG"] == 1]
+    missed = shot_df[shot_df["SHOT_MADE_FLAG"] == 0]
+
+    traces = []
+
+    # Made shots — filled circles, colored by zone
+    for zone, grp in made.groupby("SHOT_ZONE_BASIC"):
+        color = _ZONE_COLOR_MAP.get(zone, "#94a3b8")
+        traces.append(go.Scatter(
+            x=grp["LOC_X"], y=grp["LOC_Y"],
+            mode="markers",
+            name=f"{zone} (made)",
+            legendgroup=zone,
+            marker=dict(symbol="circle", size=5, color=color, opacity=0.75,
+                        line=dict(width=0)),
+            hovertemplate=(
+                f"<b>{zone}</b><br>Made<br>(%{{x}}, %{{y}})<extra></extra>"
+            ),
+        ))
+
+    # Missed shots — x markers, same zone color but more transparent
+    for zone, grp in missed.groupby("SHOT_ZONE_BASIC"):
+        color = _ZONE_COLOR_MAP.get(zone, "#94a3b8")
+        traces.append(go.Scatter(
+            x=grp["LOC_X"], y=grp["LOC_Y"],
+            mode="markers",
+            name=f"{zone} (missed)",
+            legendgroup=zone,
+            showlegend=False,
+            marker=dict(symbol="x", size=5, color=color, opacity=0.35,
+                        line=dict(width=1)),
+            hovertemplate=(
+                f"<b>{zone}</b><br>Missed<br>(%{{x}}, %{{y}})<extra></extra>"
+            ),
+        ))
+
+    # Basket marker
+    traces.append(go.Scatter(
+        x=[0], y=[0], mode="markers",
+        marker=dict(symbol="circle", size=10, color=FONT_COLOR,
+                    line=dict(color=DARK_BG, width=2)),
+        name="Basket", showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        shapes=_draw_court_shapes(),
+        xaxis=dict(range=[-260, 260], showgrid=False, zeroline=False,
+                   showticklabels=False, scaleanchor="y", scaleratio=1),
+        yaxis=dict(range=[-50, 430], showgrid=False, zeroline=False,
+                   showticklabels=False),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+            font=dict(size=10, color=FONT_COLOR),
+            bgcolor="rgba(0,0,0,0)",
+            itemsizing="constant",
+        ),
+        height=520,
+        **LAYOUT_DEFAULTS,
+    )
+    _clean_layout(fig, title=f"{player_name} — Shot Chart")
+    return fig
