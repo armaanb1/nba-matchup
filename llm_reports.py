@@ -121,6 +121,9 @@ SYSTEM_PROMPT = (
     "4. Every Strategic Recommendation must be a specific action, not a general concept. "
     "Bad: 'Exploit mismatches.' Good: 'Run Spain pick-and-rolls with Markkanen as the screener to force a guard switch.' "
     "5. Never reference players not in the provided roster data. "
+    "6. Do not add any title, header, subtitle, or preamble to the report. "
+    "Start directly with the first section heading. No 'INTERNAL SCOUTING REPORT', "
+    "no 'Prepared for Coaching Staff', no matchup title line — none of that. "
     "Structure the report with short labeled sections. Aim for 300-450 words."
 )
 
