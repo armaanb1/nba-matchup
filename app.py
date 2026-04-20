@@ -67,29 +67,28 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Global CSS  (dark premium sports-analytics aesthetic)
 # ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <style>
-    /* ── Base ──────────────────────────────────────────────────────────────── */
+_FONTS = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800'
+    '&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">'
+)
+_CSS = """
     html, body, [data-testid="stAppViewContainer"] {
         background-color: #0a0e17;
         color: #f1f5f9;
         font-family: 'DM Sans', 'Inter', Arial, sans-serif;
     }
     h1, h2, h3, h4 { font-family: 'DM Sans', Arial, sans-serif; }
-
-    /* ── Sidebar ────────────────────────────────────────────────────────────── */
     [data-testid="stSidebar"] {
         background-color: #0d1220;
         border-right: 1px solid #1e293b;
     }
-    [data-testid="stSidebar"] * { color: #f1f5f9 !important; }
-    [data-testid="stSidebar"] [data-baseweb="select"] * { color: #111111 !important; }
-
-    /* ── Metric cards ────────────────────────────────────────────────────────── */
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] div { color: #f1f5f9 !important; }
+    [data-testid="stSidebar"] [data-baseweb="select"] span { color: #111111 !important; }
     [data-testid="stMetric"] {
         background: #131a2b;
         border: 1px solid #1e293b;
@@ -97,13 +96,9 @@ st.markdown(
         padding: 14px 18px;
         transition: box-shadow 0.15s ease;
     }
-    [data-testid="stMetric"]:hover {
-        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3);
-    }
+    [data-testid="stMetric"]:hover { box-shadow: 0 0 0 1px rgba(59,130,246,0.3); }
     [data-testid="stMetricValue"] { font-size: 1.6rem !important; color: #f59e0b !important; font-family: 'JetBrains Mono', monospace !important; }
     [data-testid="stMetricLabel"] { color: #94a3b8 !important; font-size: 0.75rem !important; text-transform: uppercase; letter-spacing: 0.08em; }
-
-    /* ── Tabs ────────────────────────────────────────────────────────────────── */
     .stTabs [data-baseweb="tab-list"] {
         gap: 4px;
         background: #131a2b;
@@ -128,12 +123,8 @@ st.markdown(
         color: #f1f5f9 !important;
         border-bottom: 3px solid #3b82f6 !important;
     }
-
-    /* ── Data tables ─────────────────────────────────────────────────────────── */
     .dataframe-container { border-radius: 10px; overflow: hidden; }
     [data-testid="stDataFrame"] { border: 1px solid #1e293b; border-radius: 10px; }
-
-    /* ── Stat card ───────────────────────────────────────────────────────────── */
     .stat-card {
         background: #131a2b;
         border: 1px solid #1e293b;
@@ -142,7 +133,7 @@ st.markdown(
         margin-bottom: 8px;
         transition: box-shadow 0.15s ease;
     }
-    .stat-card:hover { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25); }
+    .stat-card:hover { box-shadow: 0 0 0 1px rgba(59,130,246,0.25); }
     .stat-card h4 {
         color: #f59e0b;
         margin: 0 0 10px 0;
@@ -153,8 +144,6 @@ st.markdown(
     }
     .stat-card p { margin: 3px 0; color: #94a3b8; font-size: 0.9rem; }
     .stat-card span.value { color: #f1f5f9; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
-
-    /* ── Report output ───────────────────────────────────────────────────────── */
     .report-box {
         background: #131a2b;
         border: 1px solid #1e293b;
@@ -167,8 +156,6 @@ st.markdown(
         white-space: pre-wrap;
         font-family: 'DM Sans', Arial, sans-serif;
     }
-
-    /* ── Section header ──────────────────────────────────────────────────────── */
     .section-header {
         font-size: 1.05rem;
         font-weight: 700;
@@ -180,8 +167,6 @@ st.markdown(
         letter-spacing: 0.08em;
         font-family: 'DM Sans', Arial, sans-serif;
     }
-
-    /* ── Player name badge ───────────────────────────────────────────────────── */
     .player-badge {
         display: inline-block;
         background: #1e3a5f;
@@ -194,8 +179,6 @@ st.markdown(
         margin-bottom: 8px;
         font-family: 'DM Sans', Arial, sans-serif;
     }
-
-    /* ── Info box ────────────────────────────────────────────────────────────── */
     .info-box {
         background: #0d1220;
         border: 1px solid #1e293b;
@@ -204,8 +187,6 @@ st.markdown(
         color: #94a3b8;
         font-size: 0.88rem;
     }
-
-    /* ── Player headshot card ────────────────────────────────────────────────── */
     .player-card {
         display: flex;
         align-items: center;
@@ -219,8 +200,6 @@ st.markdown(
     .player-card-info { flex: 1; }
     .player-card-name { font-size: 1.15rem; font-weight: 700; color: #f1f5f9; }
     .player-card-meta { font-size: 0.82rem; color: #94a3b8; margin-top: 2px; }
-
-    /* ── Matchup vs. header ──────────────────────────────────────────────────── */
     .matchup-vs-header {
         display: flex;
         align-items: center;
@@ -232,36 +211,20 @@ st.markdown(
         padding: 16px 24px;
         margin-bottom: 16px;
     }
-    .matchup-vs-divider {
-        color: #475569;
-        font-size: 1.2rem;
-        font-weight: 600;
-        font-family: 'DM Sans', Arial, sans-serif;
-    }
+    .matchup-vs-divider { color: #475569; font-size: 1.2rem; font-weight: 600; font-family: 'DM Sans', Arial, sans-serif; }
     .matchup-player-block { text-align: center; }
     .matchup-player-block .name { font-size: 1.05rem; font-weight: 700; color: #f1f5f9; margin-top: 6px; }
     .matchup-player-block .meta { font-size: 0.78rem; color: #94a3b8; }
-
-    /* ── Divider ─────────────────────────────────────────────────────────────── */
     hr { border-color: #1e293b !important; }
-
-    /* Remove Streamlit branding */
     #MainMenu, footer, header { visibility: hidden; }
-
-    /* ── CounterPoint ────────────────────────────────────────────────────────── */
     .cp-entry {
         border-radius: 12px;
         padding: 16px 20px;
         margin-bottom: 12px;
         transition: box-shadow 0.15s ease;
     }
-    .cp-entry:hover { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.25); }
-    .cp-entry-header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 8px;
-    }
+    .cp-entry:hover { box-shadow: 0 0 0 1px rgba(245,158,11,0.25); }
+    .cp-entry-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
     .cp-entry .cp-player-name {
         font-size: 1.05rem;
         font-weight: 700;
@@ -269,10 +232,9 @@ st.markdown(
         margin-bottom: 6px;
         font-family: 'DM Sans', Arial, sans-serif;
     }
-    .cp-entry .cp-narrative  { color: #94a3b8; font-size: 0.87rem; margin: 4px 0; line-height: 1.55; }
-    .cp-entry .cp-numbers    { font-size: 0.87rem; margin: 4px 0; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
-    .cp-entry .cp-coaching   { color: #e2e8f0; font-size: 0.87rem; margin: 4px 0; font-style: italic; line-height: 1.55; }
-
+    .cp-entry .cp-narrative { color: #94a3b8; font-size: 0.87rem; margin: 4px 0; line-height: 1.55; }
+    .cp-entry .cp-numbers { font-size: 0.87rem; margin: 4px 0; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+    .cp-entry .cp-coaching { color: #e2e8f0; font-size: 0.87rem; margin: 4px 0; font-style: italic; line-height: 1.55; }
     .cp-flag-callout {
         background: #130f00;
         border: 1px solid #1e293b;
@@ -314,7 +276,7 @@ st.markdown(
         margin-top: 10px;
         transition: box-shadow 0.15s ease;
     }
-    .cp-response-card:hover { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2); }
+    .cp-response-card:hover { box-shadow: 0 0 0 1px rgba(59,130,246,0.2); }
     .cp-response-header {
         font-size: 0.72rem;
         font-weight: 700;
@@ -332,21 +294,13 @@ st.markdown(
         font-size: 0.88rem;
         transition: box-shadow 0.15s ease;
     }
-    .cp-leaderboard-row:hover { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.25); }
-
-    /* ── Stat number emphasis ────────────────────────────────────────────────── */
-    .stat-mono {
-        font-family: 'JetBrains Mono', monospace;
-        font-weight: 500;
-    }
-
-    /* ── Skeleton loading pulse ──────────────────────────────────────────────── */
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .cp-leaderboard-row:hover { box-shadow: 0 0 0 1px rgba(245,158,11,0.25); }
+    .stat-mono { font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
     .cp-loading { animation: pulse 1.4s ease-in-out infinite; color: #475569; font-style: italic; font-size: 0.85rem; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+"""
+st.markdown(_FONTS, unsafe_allow_html=True)
+st.markdown(f"<style>{_CSS}</style>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
