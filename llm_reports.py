@@ -505,11 +505,9 @@ def _call_anthropic(user_prompt: str, api_key: str) -> str:
             system=_sanitize(SYSTEM_PROMPT),
             messages=[
                 {"role": "user", "content": _sanitize(user_prompt)},
-                {"role": "assistant", "content": "**"},
             ],
         )
-        # Prepend the bold marker we used as prefill so the section heading renders correctly
-        return "**" + message.content[0].text
+        return message.content[0].text
     except anthropic.AuthenticationError:
         return "❌ Invalid Anthropic API key. Please check your key in the sidebar."
     except anthropic.RateLimitError:
