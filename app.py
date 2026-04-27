@@ -1501,14 +1501,23 @@ with tab4:
                             + "\n\n".join(_career_parts)
                         )
 
+                _data_preamble = ""
+                if _career_context:
+                    _data_preamble = (
+                        f"{_career_context}\n\n"
+                        f"The numbers above are verified facts from the NBA Stats API. "
+                        f"When you make a claim about any player listed above, "
+                        f"you must cite the exact figure from the table. "
+                        f"Do not say a stat is unavailable if it appears in the table.\n\n"
+                    )
+
                 prompt = (
+                    f"{_data_preamble}"
                     f"Question: {_q_text}\n\n"
                     f"Answer this at the depth a coaching staff would expect from a senior scout. "
                     f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument. "
-                    f"When citing statistics, always lead with the CURRENT SEASON figure first. "
-                    f"Only reference a past season if it shows a meaningful trend — and when you do, "
-                    f"you must also state what the current season number is."
-                    f"{_career_context}"
+                    f"Lead with current season numbers. Only reference past seasons to show a trend, "
+                    f"and always pair the past number with the current one."
                 )
                 if _detected:
                     st.caption(f"Players detected: {', '.join(_detected.values())} — career data injected")
