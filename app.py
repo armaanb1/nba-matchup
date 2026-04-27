@@ -1474,12 +1474,15 @@ with tab4:
                 # Detect NBA player names in the question and inject career data
                 _q_text = analyst_question.strip()
                 _all_nba = {p["full_name"].lower(): p for p in _nba_players_static.get_players()}
-                _words = _q_text.replace("'s", "").replace("'s", "").split()
+                # Strip possessives but keep hyphens (e.g. Gilgeous-Alexander)
+                _q_clean = _q_text.replace("'s", "").replace("’s", "")
+                _words = _q_clean.split()
                 _detected = {}
                 for _n in [3, 2]:
                     for _i in range(len(_words) - _n + 1):
                         _candidate = " ".join(_words[_i:_i+_n])
-                        _clean = "".join(c for c in _candidate if c.isalpha() or c in " '").strip()
+                        # Keep letters, spaces, hyphens and apostrophes — preserve compound names
+                        _clean = "".join(c for c in _candidate if c.isalpha() or c in " '-").strip()
                         if _clean.lower() in _all_nba and _all_nba[_clean.lower()]["id"] not in _detected:
                             _detected[_all_nba[_clean.lower()]["id"]] = _clean
 
@@ -1492,7 +1495,9 @@ with tab4:
                             _career_parts.append(fmt_career_context(_cdf, _pname))
                     if _career_parts:
                         _career_context = (
-                            "\n\n=== CAREER DATA (from NBA Stats API — cite these numbers) ===\n"
+                            "\n\n=== VERIFIED CAREER DATA (NBA Stats API) ===\n"
+                            "IMPORTANT: Use ONLY the numbers below when citing statistics. "
+                            "Do not use training-data estimates — they are frequently wrong on per-game figures.\n\n"
                             + "\n\n".join(_career_parts)
                         )
 
