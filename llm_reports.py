@@ -719,14 +719,13 @@ def generate_game_prep_report(
 # ---------------------------------------------------------------------------
 
 def _sanitize(text: str) -> str:
-    """Replace common non-ASCII characters with ASCII equivalents."""
+    """Normalize typographic characters; leave all Unicode intact (Anthropic API is UTF-8)."""
     return (
         text
         .replace("\u2019", "'").replace("\u2018", "'")
         .replace("\u201c", '"').replace("\u201d", '"')
         .replace("\u2013", "-").replace("\u2014", "-")
         .replace("\u2026", "...")
-        .encode("ascii", errors="replace").decode("ascii")
     )
 
 
