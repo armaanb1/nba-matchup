@@ -25,11 +25,15 @@ from data_loader import (
     load_matchup_data,
 )
 from llm_reports import (
+    ANALYST_SYSTEM_PROMPT,
     generate_matchup_report,
     generate_player_profile_report,
     generate_playoff_matchup_keys,
     generate_similarity_report,
     generate_team_matchup_report,
+    stream_matchup_report,
+    stream_player_profile_report,
+    _call_anthropic,
 )
 from models import MatchupGraph
 from visualizations import (
@@ -415,6 +419,30 @@ def _get_or_compute_drift(player_id: int, player_name: str = "") -> dict | None:
         result = None
     cache[player_id] = result
     return result
+
+
+def _get_career_df_fast(player_id: int):
+    """
+    Return (career_df, weighted_baseline) without making any live NBA API calls.
+    Check order: CounterPoint session cache → processed file cache → raw file cache.
+    Returns (None, {}) if no cache exists so callers fall back gracefully.
+    """
+    # 1. Already fetched during CounterPoint analysis this session
+    cached_df = st.session_state.get("cp_career_dfs", {}).get(player_id)
+    if cached_df is not None and not cached_df.empty:
+        return cached_df, {}
+
+    # 2. Processed file cache (fast JSON read)
+    proc_cache = CACHE_DIR / f"career_splits_processed_{player_id}.json"
+    raw_cache  = CACHE_DIR / f"career_splits_{player_id}.json"
+    if proc_cache.exists() or raw_cache.exists():
+        try:
+            return get_player_career_splits(player_id)
+        except Exception:
+            pass
+
+    # 3. No cache at all — skip to avoid blocking for 60+ seconds on Streamlit Cloud
+    return None, {}
 
 
 def _render_cp_flag(player_id: int, player_name: str) -> None:
@@ -1234,7 +1262,7 @@ with tab4:
 
     report_type = st.radio(
         "Report Type",
-        ["Matchup Report", "Player Profile Report", "Defensive Similarity Report", "Team Matchup Report"],
+        ["Matchup Report", "Player Profile Report", "Defensive Similarity Report", "Team Matchup Report", "Ask the Analyst"],
         horizontal=True,
     )
 
@@ -1253,43 +1281,46 @@ with tab4:
             def_p = graph.players.get(def_pid)
 
             if edge and off_p and def_p:
-                with st.spinner("Generating scouting report…"):
-                    _off_zones = get_player_shot_zones(
-                        off_pid, st.session_state.get("season", "2025-26"),
-                        st.session_state.get("season_type", "Regular Season"),
-                    ) if off_pid else {}
-                    _def_zones = get_player_shot_zones(
-                        def_pid, st.session_state.get("season", "2025-26"),
-                        st.session_state.get("season_type", "Regular Season"),
-                    ) if def_pid else {}
-                    try:
-                        _off_career_df, _ = get_player_career_splits(off_pid)
-                    except Exception:
-                        _off_career_df = None
-                    try:
-                        _def_career_df, _ = get_player_career_splits(def_pid)
-                    except Exception:
-                        _def_career_df = None
-                    report = generate_matchup_report(
-                        edge, off_p, def_p,
-                        graph.get_offensive_neighborhood(off_r, top_n=8),
-                        graph.get_defensive_neighborhood(def_r, top_n=8),
-                        st.session_state.api_key,
-                        off_shot_zones=_off_zones,
-                        def_shot_zones=_def_zones,
-                        off_career_df=_off_career_df,
-                        def_career_df=_def_career_df,
-                    )
+                # Fetch supporting data — use fast (cache-only) path for career splits
+                _off_zones = get_player_shot_zones(
+                    off_pid, st.session_state.get("season", "2025-26"),
+                    st.session_state.get("season_type", "Regular Season"),
+                ) if off_pid else {}
+                _def_zones = get_player_shot_zones(
+                    def_pid, st.session_state.get("season", "2025-26"),
+                    st.session_state.get("season_type", "Regular Season"),
+                ) if def_pid else {}
+                _off_career_df, _ = _get_career_df_fast(off_pid)
+                _def_career_df, _ = _get_career_df_fast(def_pid)
+
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {off_r} vs {def_r}")
-                st.markdown(f'<div class="report-box">{report}</div>', unsafe_allow_html=True)
+                _rpt_placeholder = st.empty()
+                _rpt_text = ""
+                for _chunk in stream_matchup_report(
+                    edge, off_p, def_p,
+                    graph.get_offensive_neighborhood(off_r, top_n=8),
+                    graph.get_defensive_neighborhood(def_r, top_n=8),
+                    st.session_state.api_key,
+                    off_shot_zones=_off_zones,
+                    def_shot_zones=_def_zones,
+                    off_career_df=_off_career_df,
+                    def_career_df=_def_career_df,
+                ):
+                    _rpt_text += _chunk
+                    _rpt_placeholder.markdown(
+                        f'<div class="report-box">{_rpt_text}▌</div>',
+                        unsafe_allow_html=True,
+                    )
+                _rpt_placeholder.markdown(
+                    f'<div class="report-box">{_rpt_text}</div>',
+                    unsafe_allow_html=True,
+                )
                 # CounterPoint flags — show for both players if drift detected
-                off_pid_r = graph.find_player_id(off_r)
-                def_pid_r = graph.find_player_id(def_r)
-                if off_pid_r:
-                    _render_cp_flag(off_pid_r, off_r)
-                if def_pid_r:
-                    _render_cp_flag(def_pid_r, def_r)
+                if off_pid:
+                    _render_cp_flag(off_pid, off_r)
+                if def_pid:
+                    _render_cp_flag(def_pid, def_r)
             else:
                 st.warning("No direct matchup found for that pair with sufficient possessions.")
 
@@ -1304,27 +1335,32 @@ with tab4:
                 hood = (graph.get_offensive_neighborhood(pp_r_player, top_n=10)
                         if pp_r_role == "offense"
                         else graph.get_defensive_neighborhood(pp_r_player, top_n=10))
-                with st.spinner("Generating scouting report…"):
-                    _pp_zones = get_player_shot_zones(
-                        pid, st.session_state.get("season", "2025-26"),
-                        st.session_state.get("season_type", "Regular Season"),
-                    ) if pid else {}
-                    try:
-                        _pp_career_df, _ = get_player_career_splits(pid)
-                    except Exception:
-                        _pp_career_df = None
-                    report = generate_player_profile_report(
-                        player, pp_r_role, hood, st.session_state.api_key,
-                        shot_zones=_pp_zones,
-                        career_df=_pp_career_df,
-                    )
+                _pp_zones = get_player_shot_zones(
+                    pid, st.session_state.get("season", "2025-26"),
+                    st.session_state.get("season_type", "Regular Season"),
+                ) if pid else {}
+                _pp_career_df, _ = _get_career_df_fast(pid)
+
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {pp_r_player} ({pp_r_role.title()})")
-                st.markdown(f'<div class="report-box">{report}</div>', unsafe_allow_html=True)
-                # CounterPoint flag
-                pp_pid_r = graph.find_player_id(pp_r_player)
-                if pp_pid_r:
-                    _render_cp_flag(pp_pid_r, pp_r_player)
+                _pp_placeholder = st.empty()
+                _pp_text = ""
+                for _chunk in stream_player_profile_report(
+                    player, pp_r_role, hood, st.session_state.api_key,
+                    shot_zones=_pp_zones,
+                    career_df=_pp_career_df,
+                ):
+                    _pp_text += _chunk
+                    _pp_placeholder.markdown(
+                        f'<div class="report-box">{_pp_text}▌</div>',
+                        unsafe_allow_html=True,
+                    )
+                _pp_placeholder.markdown(
+                    f'<div class="report-box">{_pp_text}</div>',
+                    unsafe_allow_html=True,
+                )
+                if pid:
+                    _render_cp_flag(pid, pp_r_player)
             else:
                 st.warning("Player not found.")
 
@@ -1347,6 +1383,39 @@ with tab4:
                 st.warning("Not enough data for similarity report.")
             else:
                 st.warning("Player not found.")
+
+    elif report_type == "Ask the Analyst":
+        st.markdown("Ask any basketball question and get a scout-quality answer.")
+
+        analyst_question = st.text_area(
+            "Your question",
+            placeholder=(
+                "e.g. How should a team defend a center who can shoot threes? "
+                "What makes a good pick-and-roll defender? "
+                "How do you attack a drop coverage big?"
+            ),
+            key="analyst_ask_input",
+            height=100,
+        )
+
+        if st.button("Ask", type="primary", disabled=not st.session_state.api_key):
+            if analyst_question.strip():
+                prompt = (
+                    f"Question: {analyst_question.strip()}\n\n"
+                    f"Answer this at the depth a coaching staff would expect from a senior scout. "
+                    f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument."
+                )
+                with st.spinner("The analyst is thinking…"):
+                    _analyst_report = _call_anthropic(
+                        prompt,
+                        st.session_state.api_key,
+                        system_override=ANALYST_SYSTEM_PROMPT,
+                    )
+                st.markdown("---")
+                st.markdown("### The Analyst")
+                st.markdown(f'<div class="report-box">{_analyst_report}</div>', unsafe_allow_html=True)
+            else:
+                st.warning("Enter a question first.")
 
     else:  # Team Matchup Report
         if not st.session_state.get("team_data_loaded"):
@@ -1531,13 +1600,17 @@ with tab7:
                         (_ci + 1) / max(len(_cp_pids_to_run), 1),
                         text=f"Analysing {graph.players[_cpid].name if _cpid in graph.players else _cpid}…",
                     )
-                    if _cpid not in st.session_state.cp_matchup_drift:
+                    # Retry on re-click if previously None (API may have been down)
+                    _already_ok = (
+                        _cpid in st.session_state.cp_matchup_drift
+                        and st.session_state.cp_matchup_drift[_cpid] is not None
+                    )
+                    if not _already_ok:
                         try:
                             _cp_career_df, _cp_wb = get_player_career_splits(_cpid)
                             _cp_pname = graph.players[_cpid].name if _cpid in graph.players else ""
                             _cp_result = compute_drift(_cpid, _cp_career_df, _cp_wb,
                                                        st.session_state.season, player_name=_cp_pname)
-                            # Store career_df for reuse in panel display (no double-fetch)
                             st.session_state.cp_career_dfs[_cpid] = _cp_career_df
                         except Exception:
                             _cp_result = None
@@ -1762,7 +1835,13 @@ with tab7:
                             _render_mini_table(_smt_rows, _ss_lbl, f"{_off_pid}_{_ss}_{_mi}_stable")
 
                     else:
-                        # No drift data computed yet
+                        # _drift is None: either not yet computed, or computed with insufficient data
+                        _was_tried = _off_pid in st.session_state.cp_matchup_drift
+                        _no_data_msg = (
+                            "Insufficient career history to compute narrative drift — fewer than 2 qualifying seasons on record."
+                            if _was_tried else
+                            "Click ⚡ Run CounterPoint Analysis to compute narrative drift for this matchup."
+                        )
                         st.markdown(
                             f'<div class="cp-entry" style="background:#131a2b; '
                             f'border-left: 4px solid #1e293b;">'
@@ -1773,7 +1852,7 @@ with tab7:
                             f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
                             f'</div>'
                             f'<div style="color:#475569; font-size:0.85rem;">'
-                            f'Run CounterPoint Analysis above to compute narrative drift.</div>'
+                            f'{_no_data_msg}</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )

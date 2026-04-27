@@ -292,19 +292,18 @@ SYSTEM_PROMPT = (
 )
 
 
-def generate_matchup_report(
+def _build_matchup_prompt(
     edge: MatchupEdge,
     off_player: Player,
     def_player: Player,
     off_neighborhood: List[Dict],
     def_neighborhood: List[Dict],
-    api_key: str,
     off_shot_zones: Optional[Dict] = None,
     def_shot_zones: Optional[Dict] = None,
     off_career_df: Optional[pd.DataFrame] = None,
     def_career_df: Optional[pd.DataFrame] = None,
 ) -> str:
-    """Generate a scouting report for a specific head-to-head matchup."""
+    """Build the matchup report prompt string (shared by sync and streaming callers)."""
     off_zone_ctx = _fmt_shot_zones(off_shot_zones or {}, off_player.name)
     def_zone_ctx = _fmt_shot_zones(def_shot_zones or {}, def_player.name)
 
@@ -347,7 +346,7 @@ def generate_matchup_report(
         if (off_zone_ctx or def_zone_ctx) else ""
     )
 
-    prompt = (
+    return (
         f"Write a scouting report on {off_player.name} as the offensive player being guarded by {def_player.name}. "
         f"The report is for a coaching staff preparing a defensive game plan. "
         f"Start with {off_player.name}'s offensive profile — where he operates, why those zones work given his physical tools, "
@@ -361,18 +360,56 @@ def generate_matchup_report(
         f"{shot_zone_instruction} "
         f"Do not list stats. Build an argument.\n\n{context}"
     )
+
+
+def generate_matchup_report(
+    edge: MatchupEdge,
+    off_player: Player,
+    def_player: Player,
+    off_neighborhood: List[Dict],
+    def_neighborhood: List[Dict],
+    api_key: str,
+    off_shot_zones: Optional[Dict] = None,
+    def_shot_zones: Optional[Dict] = None,
+    off_career_df: Optional[pd.DataFrame] = None,
+    def_career_df: Optional[pd.DataFrame] = None,
+) -> str:
+    """Generate a scouting report (blocking, returns full string)."""
+    prompt = _build_matchup_prompt(
+        edge, off_player, def_player, off_neighborhood, def_neighborhood,
+        off_shot_zones, def_shot_zones, off_career_df, def_career_df,
+    )
     return _call_anthropic(prompt, api_key)
 
 
-def generate_player_profile_report(
+def stream_matchup_report(
+    edge: MatchupEdge,
+    off_player: Player,
+    def_player: Player,
+    off_neighborhood: List[Dict],
+    def_neighborhood: List[Dict],
+    api_key: str,
+    off_shot_zones: Optional[Dict] = None,
+    def_shot_zones: Optional[Dict] = None,
+    off_career_df: Optional[pd.DataFrame] = None,
+    def_career_df: Optional[pd.DataFrame] = None,
+):
+    """Streaming variant — yields text chunks as they arrive from the API."""
+    prompt = _build_matchup_prompt(
+        edge, off_player, def_player, off_neighborhood, def_neighborhood,
+        off_shot_zones, def_shot_zones, off_career_df, def_career_df,
+    )
+    return stream_report(prompt, api_key)
+
+
+def _build_profile_prompt(
     player: Player,
     role: str,
     neighborhood: List[Dict],
-    api_key: str,
     shot_zones: Optional[Dict] = None,
     career_df: Optional[pd.DataFrame] = None,
 ) -> str:
-    """Generate a player scouting report based on their full matchup profile."""
+    """Build the player profile report prompt string."""
     zone_ctx = _fmt_shot_zones(shot_zones or {}, player.name)
     zone_section = f"\n\n=== SHOT DISTRIBUTION ===\n{zone_ctx}" if zone_ctx else ""
 
@@ -395,7 +432,7 @@ def generate_player_profile_report(
         if zone_ctx else ""
     )
 
-    prompt = (
+    return (
         f"Write a scouting report on {player.name} as a {'scorer' if role == 'offense' else 'defender'}. "
         f"This is for a coaching staff who needs to understand not just what {player.name} does, "
         f"but why it works and what physical or schematic conditions make it break down. "
@@ -409,7 +446,32 @@ def generate_player_profile_report(
         f"Close with one concrete scheme recommendation a coaching staff could install tomorrow. "
         f"Do not list stats. Every number exists to support an argument about how to defend this player.\n\n{context}"
     )
+
+
+def generate_player_profile_report(
+    player: Player,
+    role: str,
+    neighborhood: List[Dict],
+    api_key: str,
+    shot_zones: Optional[Dict] = None,
+    career_df: Optional[pd.DataFrame] = None,
+) -> str:
+    """Generate a player profile report (blocking, returns full string)."""
+    prompt = _build_profile_prompt(player, role, neighborhood, shot_zones, career_df)
     return _call_anthropic(prompt, api_key)
+
+
+def stream_player_profile_report(
+    player: Player,
+    role: str,
+    neighborhood: List[Dict],
+    api_key: str,
+    shot_zones: Optional[Dict] = None,
+    career_df: Optional[pd.DataFrame] = None,
+):
+    """Streaming variant — yields text chunks as they arrive from the API."""
+    prompt = _build_profile_prompt(player, role, neighborhood, shot_zones, career_df)
+    return stream_report(prompt, api_key)
 
 
 def generate_similarity_report(
@@ -647,13 +709,38 @@ def _sanitize(text: str) -> str:
     )
 
 
-def _call_anthropic(user_prompt: str, api_key: str) -> str:
+ANALYST_SYSTEM_PROMPT = (
+    "You are a veteran NBA analyst and scout with 20 years of experience working in front offices and on coaching staffs. "
+    "You think in terms of schemes, archetypes, and physical matchups — not just statistics. "
+    "When someone asks you a basketball question, you answer it the way a scout would brief a coaching staff: "
+    "direct, specific, grounded in how the game is actually played. "
+
+    "Rules: "
+    "1. Answer the question that was actually asked. Do not reframe it, hedge it, or answer a safer version of it. "
+    "2. Lead with the core answer, not background context. The person asking already knows basketball. "
+    "3. Use scout language: scheme names, coverage types, play actions, positional archetypes, physical tools. "
+    "Drop coverage. ICE. Switching. Spain pick-and-roll. DHO. Nail help. Weak-side skip. "
+    "4. When a concept has nuance, explain the nuance — but commit to a position. "
+    "Do not give both sides and leave the person to decide. Tell them what you actually think. "
+    "5. Cite real players or real teams as examples where they make the argument sharper. "
+    "6. Write in complete paragraphs. No bullet points. No numbered lists. "
+    "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
+    "7. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
+)
+
+
+def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[str] = None) -> str:
+    system = system_override if system_override else SYSTEM_PROMPT
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=_sanitize(SYSTEM_PROMPT),
+            system=[{
+                "type": "text",
+                "text": _sanitize(system),
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=[
                 {"role": "user", "content": _sanitize(user_prompt)},
             ],
@@ -665,3 +752,33 @@ def _call_anthropic(user_prompt: str, api_key: str) -> str:
         return "❌ Anthropic rate limit hit. Please wait a moment and try again."
     except Exception as e:
         return f"❌ Report generation failed: {e}"
+
+
+def stream_report(user_prompt: str, api_key: str):
+    """
+    Yield text chunks from a streaming Anthropic response.
+    Uses ephemeral prompt caching on the system prompt — first call pays full
+    price; subsequent calls within 5 minutes are served from cache at lower
+    latency and cost.
+    Yields a single error string on failure (so callers always get a string).
+    """
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=[{
+                "type": "text",
+                "text": _sanitize(SYSTEM_PROMPT),
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": _sanitize(user_prompt)}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+    except anthropic.AuthenticationError:
+        yield "❌ Invalid Anthropic API key. Please check your key in the sidebar."
+    except anthropic.RateLimitError:
+        yield "❌ Anthropic rate limit hit. Please wait a moment and try again."
+    except Exception as e:
+        yield f"❌ Report generation failed: {e}"
