@@ -239,6 +239,43 @@ def _select_flagged_stat(drift_scores: Dict[str, float]) -> Optional[str]:
     return None
 
 
+def _trend_confirms(flag: str, stat: str, trend: str) -> bool:
+    """Return True when the trend direction is consistent with the flag type."""
+    if flag == "role_shift":
+        return True
+    lower_better = stat in LOWER_IS_BETTER
+    if flag == "better_than_reputation":
+        return trend == ("down" if lower_better else "up")
+    # worse_than_reputation
+    return trend == ("up" if lower_better else "down")
+
+
+def _select_flagged_stat_with_trend(
+    drift_scores: Dict[str, float],
+    trend_directions: Dict[str, str],
+) -> Optional[str]:
+    """
+    Like _select_flagged_stat but additionally requires the trend direction to
+    confirm the flag direction.  Eliminates one-year noise spikes.
+    """
+    for stat in STAT_PRIORITY[:-1]:
+        if stat in drift_scores and abs(drift_scores[stat]) >= DRIFT_THRESHOLD:
+            z    = drift_scores[stat]
+            flag = _flag_from_stat(stat, z)
+            trend = trend_directions.get(stat, "flat")
+            if _trend_confirms(flag, stat, trend):
+                return stat
+
+    if "ft_rate" in drift_scores and abs(drift_scores["ft_rate"]) >= FT_RATE_THRESHOLD:
+        z    = drift_scores["ft_rate"]
+        flag = _flag_from_stat("ft_rate", z)
+        trend = trend_directions.get("ft_rate", "flat")
+        if _trend_confirms(flag, "ft_rate", trend):
+            return "ft_rate"
+
+    return None
+
+
 def _flag_from_stat(stat: str, z: float) -> str:
     """Determine flag type from the selected stat and its z-score direction."""
     lower_better = stat in LOWER_IS_BETTER
@@ -548,9 +585,28 @@ FLAG_LABEL = {
 
 # ── Core drift engine ──────────────────────────────────────────────────────────
 
+def _compute_trend(values: List[float], is_pct_stat: bool) -> str:
+    """
+    Fit a linear slope across up to the last 3 values (ascending time order).
+    Returns 'up', 'down', or 'flat'.
+    """
+    if len(values) < 2:
+        return "flat"
+    pts = values[-3:] if len(values) >= 3 else values
+    x = np.arange(len(pts), dtype=float)
+    slope = float(np.polyfit(x, pts, 1)[0])
+    threshold = 0.005 if is_pct_stat else 0.3
+    if slope > threshold:
+        return "up"
+    if slope < -threshold:
+        return "down"
+    return "flat"
+
+
 def compute_drift(
     player_id: int,
-    raw_career_df: pd.DataFrame,
+    career_df: pd.DataFrame,
+    weighted_baseline: Dict,
     current_season: str,
     player_name: str = "",
 ) -> Optional[Dict]:
@@ -558,50 +614,65 @@ def compute_drift(
     Compute narrative drift for a single player.
 
     Args:
-        player_id:       NBA player ID
-        raw_career_df:   SeasonTotalsRegularSeason DataFrame from playercareerstats
-        current_season:  Season string, e.g. "2025-26"
-        player_name:     Display name for player-specific narrative text
+        player_id:         NBA player ID
+        career_df:         Processed career DataFrame from get_player_career_splits
+                           (sorted descending, one row per season, includes 'weight' column)
+        weighted_baseline: Decay-weighted averages from get_player_career_splits
+        current_season:    Season string, e.g. "2025-26"
+        player_name:       Display name for player-specific narrative text
 
     Returns:
         - dict with "flagged": True  + full drift data when a flag is triggered
         - dict with "flagged": False + stable_summary when below threshold
         - None only for truly missing / insufficient data
+
+    Flag is only triggered when BOTH the z-score exceeds DRIFT_THRESHOLD AND the
+    trend direction confirms the direction (eliminates one-year noise spikes).
     """
-    if raw_career_df.empty:
+    if career_df is None or career_df.empty:
         return None
 
-    season_stats = _aggregate_career_splits(raw_career_df)
-    if not season_stats:
+    # career_df sorted descending (most recent first).  Convert to list for processing.
+    season_stats_desc: List[Dict] = career_df.to_dict("records")
+    if not season_stats_desc:
         return None
 
-    curr_candidates = [s for s in season_stats if s["season_id"] == current_season]
-    curr = curr_candidates[-1] if curr_candidates else season_stats[-1]
+    # Locate current season row
+    curr_candidates = [s for s in season_stats_desc if s.get("season_id") == current_season]
+    curr = curr_candidates[0] if curr_candidates else season_stats_desc[0]
     curr_sid = curr["season_id"]
 
-    history = [s for s in season_stats if s["season_id"] != curr_sid]
-    if len(history) < MIN_SEASONS_HISTORY:
+    # History = all seasons except current, still descending
+    history_desc = [s for s in season_stats_desc if s.get("season_id") != curr_sid]
+    if len(history_desc) < MIN_SEASONS_HISTORY:
         return None
 
-    prior_2 = history[-2:]
+    # prior_2: the 2 most recent historical seasons (descending → first 2 elements)
+    prior_2 = history_desc[:2]
 
-    drift_scores: Dict[str, float] = {}
-    career_avgs:  Dict[str, float] = {}
-    prior_2_vals: Dict[str, List[float]] = {}
-    curr_vals:    Dict[str, float] = {}
-    trajectories: Dict[str, Dict] = {}
+    # Ascending order needed for trajectory / trend computation
+    season_stats_asc: List[Dict] = list(reversed(season_stats_desc))
+
+    drift_scores:     Dict[str, float]       = {}
+    career_avgs:      Dict[str, float]       = {}
+    prior_2_vals:     Dict[str, List[float]] = {}
+    curr_vals:        Dict[str, float]       = {}
+    trajectories:     Dict[str, Dict]        = {}
+    trend_directions: Dict[str, str]         = {}
 
     for stat in DRIFT_STATS:
-        h_vals = [s[stat] for s in history if s.get(stat) is not None]
+        h_vals = [s[stat] for s in history_desc if s.get(stat) is not None]
         c_val  = curr.get(stat)
 
         if len(h_vals) < 2 or c_val is None:
             continue
 
-        mean = float(np.mean(h_vals))
-        std  = float(np.std(h_vals))
+        std = float(np.std(h_vals))
         if std < 1e-6:
             continue
+
+        # Use weighted baseline as the comparison mean; fall back to simple mean
+        mean = weighted_baseline.get(stat, float(np.mean(h_vals)))
 
         z = (c_val - mean) / std
         drift_scores[stat] = float(z)
@@ -609,27 +680,36 @@ def compute_drift(
         prior_2_vals[stat] = [float(s[stat]) for s in prior_2 if s.get(stat) is not None]
         curr_vals[stat]    = float(c_val)
 
-        traj = season_stats[-5:] if len(season_stats) >= 5 else season_stats
+        # Trajectory: last 5 seasons ascending (oldest→newest) for sparkline display
+        traj_asc = [s for s in season_stats_asc if s.get(stat) is not None]
+        traj_asc = traj_asc[-5:] if len(traj_asc) >= 5 else traj_asc
         trajectories[stat] = {
-            "seasons": [s["season_id"] for s in traj if s.get(stat) is not None],
-            "values":  [float(s[stat])  for s in traj if s.get(stat) is not None],
+            "seasons": [s["season_id"] for s in traj_asc],
+            "values":  [float(s[stat])  for s in traj_asc],
         }
+
+        # Trend direction: slope across last 3 seasons (ascending)
+        is_pct = "pct" in stat or stat == "ft_rate"
+        vals_asc = [float(s[stat]) for s in season_stats_asc if s.get(stat) is not None]
+        trend_directions[stat] = _compute_trend(vals_asc, is_pct)
 
     if not drift_scores:
         return None
 
-    # ── Priority-based stat selection (not raw max z-score) ───────────────────
-    flagged_stat = _select_flagged_stat(drift_scores)
+    # Priority-based stat selection with trend confirmation (eliminates noise spikes)
+    flagged_stat = _select_flagged_stat_with_trend(drift_scores, trend_directions)
 
     if flagged_stat is None:
-        # No stat crossed the threshold — return stable-profile dict
         return {
-            "flagged":        False,
-            "player_id":      player_id,
-            "drift_scores":   drift_scores,
-            "career_avgs":    career_avgs,
-            "current_vals":   curr_vals,
-            "stable_summary": _build_stable_summary(
+            "flagged":          False,
+            "player_id":        player_id,
+            "drift_scores":     drift_scores,
+            "career_avgs":      career_avgs,
+            "current_vals":     curr_vals,
+            "prior_2_vals":     prior_2_vals,
+            "trend_directions": trend_directions,
+            "trajectories":     trajectories,
+            "stable_summary":   _build_stable_summary(
                 player_name, drift_scores, career_avgs, curr_vals
             ),
         }
@@ -642,22 +722,23 @@ def compute_drift(
     )
 
     return {
-        "flagged":         True,
-        "player_id":       player_id,
-        "drift_scores":    drift_scores,
-        "max_drift_stat":  flagged_stat,
-        "max_drift_score": z_score,
-        "flag":            flag,
-        "flag_desc":       flag_desc,
-        "narrative":       narrative,
-        "numbers_say":     numbers_say,
-        "coaching_impl":   coaching_impl,
-        "career_avgs":     career_avgs,
-        "prior_2_vals":    prior_2_vals,
-        "current_vals":    curr_vals,
-        "trajectories":    trajectories,
-        "seasons_analyzed": len(history) + 1,
-        "stable_summary":  "",   # empty when flagged
+        "flagged":          True,
+        "player_id":        player_id,
+        "drift_scores":     drift_scores,
+        "max_drift_stat":   flagged_stat,
+        "max_drift_score":  z_score,
+        "flag":             flag,
+        "flag_desc":        flag_desc,
+        "narrative":        narrative,
+        "numbers_say":      numbers_say,
+        "coaching_impl":    coaching_impl,
+        "career_avgs":      career_avgs,
+        "prior_2_vals":     prior_2_vals,
+        "current_vals":     curr_vals,
+        "trajectories":     trajectories,
+        "trend_directions": trend_directions,
+        "seasons_analyzed": len(history_desc) + 1,
+        "stable_summary":   "",
     }
 
 

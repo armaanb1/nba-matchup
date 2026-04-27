@@ -13,7 +13,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -708,29 +708,146 @@ def get_playoff_series(
     return _parse_nba_result_set(data)
 
 
+_MIN_GAMES_PER_SEASON = 10   # shared with counterpoint.py via counterpoint.MIN_GAMES_PER_SEASON
+
+
+def _aggregate_career_splits_v2(raw_df: pd.DataFrame) -> List[Dict]:
+    """
+    Process SeasonTotalsRegularSeason DataFrame into structured per-season dicts.
+    Prefers the TOT aggregate row for traded players.
+    Filters seasons with < _MIN_GAMES_PER_SEASON games.
+    """
+    rows: List[Dict] = []
+    if "SEASON_ID" not in raw_df.columns:
+        return rows
+
+    for season_id, group in raw_df.groupby("SEASON_ID", sort=False):
+        if len(group) > 1 and "TEAM_ABBREVIATION" in group.columns:
+            tot = group[group["TEAM_ABBREVIATION"] == "TOT"]
+            row = tot.iloc[0] if not tot.empty else group.iloc[-1]
+        else:
+            row = group.iloc[-1]
+
+        def _sf(col):
+            v = row.get(col)
+            try:
+                return float(v) if v is not None and v == v else None
+            except (TypeError, ValueError):
+                return None
+
+        gp   = _sf("GP") or 0.0
+        if gp < _MIN_GAMES_PER_SEASON:
+            continue
+
+        fgm  = _sf("FGM") or 0.0
+        fga  = _sf("FGA") or 0.0
+        fg3m = _sf("FG3M") or 0.0
+        fg3a = _sf("FG3A") or 0.0
+        fg3p = _sf("FG3_PCT")
+        fta  = _sf("FTA") or 0.0
+        pts  = _sf("PTS")
+        tov  = _sf("TOV") or 0.0
+        ast  = _sf("AST")
+        reb  = _sf("REB")
+
+        ts_denom = 2.0 * (fga + 0.44 * fta)
+        ts_pct   = pts / ts_denom       if pts is not None and ts_denom > 0 else None
+        efg_pct  = (fgm + 0.5 * fg3m) / fga  if fga > 2                   else None
+        tov_d    = fga + 0.44 * fta + tov
+        tov_pct  = tov / tov_d          if tov_d > 0                       else None
+        ft_rate  = fta / fga             if fga > 2                        else None
+        fg3_pct  = fg3p                  if fg3a and fg3a >= 1.5           else None
+
+        rows.append({
+            "season_id": str(season_id),
+            "team_abbr": str(row.get("TEAM_ABBREVIATION", "") or ""),
+            "gp":        gp,
+            "ppg":       pts,
+            "rpg":       reb,
+            "apg":       ast,
+            "ast_pg":    ast,
+            "fg3_pct":   fg3_pct,
+            "ts_pct":    ts_pct,
+            "efg_pct":   efg_pct,
+            "tov_pct":   tov_pct,
+            "ft_rate":   ft_rate,
+        })
+    return rows
+
+
 def get_player_career_splits(
     player_id: int,
     force_refresh: bool = False,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict]:
     """
     Fetch per-game regular-season career splits from playercareerstats.
 
-    Uses SeasonTotalsRegularSeason (resultSets[0]).  Column names are parsed
-    dynamically from the headers key — never assumed by position.
-    Returns a DataFrame with one row per season (multi-team seasons may have
-    one row per team plus a TOT aggregate row).
+    Returns a tuple (career_df, weighted_baseline) where:
+      career_df         — one row per qualifying season (sorted descending, most recent first),
+                          columns: season_id, team_abbr, gp, ppg, rpg, apg, ast_pg,
+                                   fg3_pct, ts_pct, efg_pct, tov_pct, ft_rate, weight
+      weighted_baseline — decay-weighted average for each tracked stat across all seasons.
+                          Used by compute_drift as the comparison baseline.
 
-    Cached to data/cache/career_splits_{player_id}.json
+    Exponential decay weights: weights[i] = 0.75**i (i=0 = most recent season).
+    Raw API JSON cached at data/cache/career_splits_{player_id}.json.
+    Processed result cached at data/cache/career_splits_processed_{player_id}.json.
     """
-    cache_path = CACHE_DIR / f"career_splits_{player_id}.json"
+    proc_cache = CACHE_DIR / f"career_splits_processed_{player_id}.json"
+    if not force_refresh and proc_cache.exists():
+        try:
+            with open(proc_cache) as f:
+                cached = json.load(f)
+            career_df = pd.DataFrame(cached["seasons"])
+            return career_df, cached.get("weighted_baseline", {})
+        except Exception:
+            pass
+
+    raw_cache = CACHE_DIR / f"career_splits_{player_id}.json"
     url = (
         "https://stats.nba.com/stats/playercareerstats"
         f"?PlayerID={player_id}&PerMode=PerGame"
     )
-    data = _fetch_nba_direct(url, cache_path, force_refresh=force_refresh)
+    data = _fetch_nba_direct(url, raw_cache, force_refresh=force_refresh)
     if not data:
-        return pd.DataFrame()
-    return _parse_nba_result_set(data, idx=0)
+        return pd.DataFrame(), {}
+
+    raw_df = _parse_nba_result_set(data, idx=0)
+    if raw_df.empty:
+        return pd.DataFrame(), {}
+
+    rows = _aggregate_career_splits_v2(raw_df)
+    if not rows:
+        return pd.DataFrame(), {}
+
+    # Sort descending — most recent season first (index 0)
+    rows.sort(key=lambda x: x["season_id"], reverse=True)
+
+    # Exponential decay weights (index 0 = most recent = highest weight before norm)
+    weights_raw = [0.75 ** i for i in range(len(rows))]
+    w_sum = sum(weights_raw)
+    weights_norm = [w / w_sum for w in weights_raw]
+    for row, w in zip(rows, weights_norm):
+        row["weight"] = w
+
+    # Weighted baseline across all seasons for each tracked stat
+    tracked = ["fg3_pct", "ts_pct", "efg_pct", "tov_pct", "ppg", "ast_pg", "ft_rate"]
+    weighted_baseline: Dict = {}
+    for stat in tracked:
+        num = sum(r[stat] * r["weight"] for r in rows if r.get(stat) is not None)
+        denom = sum(r["weight"] for r in rows if r.get(stat) is not None)
+        if denom > 0:
+            weighted_baseline[stat] = num / denom
+
+    career_df = pd.DataFrame(rows)
+
+    try:
+        with open(proc_cache, "w") as f:
+            json.dump({"seasons": rows, "weighted_baseline": weighted_baseline}, f)
+    except Exception:
+        pass
+
+    return career_df, weighted_baseline
 
 
 def get_team_roster(

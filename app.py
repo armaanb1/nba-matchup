@@ -11,8 +11,10 @@ Four interaction modes:
 import numpy as np
 import pandas as pd
 import streamlit as st
+from typing import Dict
 
 from data_loader import (
+    CACHE_DIR,
     enrich_graph,
     get_player_shot_chart,
     get_player_shot_zones,
@@ -405,8 +407,9 @@ def _get_or_compute_drift(player_id: int, player_name: str = "") -> dict | None:
     if player_id in cache:
         return cache[player_id]
     try:
-        splits_df = get_player_career_splits(player_id)
-        result = compute_drift(player_id, splits_df, st.session_state.season, player_name=player_name)
+        career_df, weighted_baseline = get_player_career_splits(player_id)
+        result = compute_drift(player_id, career_df, weighted_baseline,
+                               st.session_state.season, player_name=player_name)
     except Exception:
         result = None
     cache[player_id] = result
@@ -730,6 +733,123 @@ with tab1:
                     pd.DataFrame([edge.to_dict()]).T.rename(columns={0: "Value"}),
                     use_container_width=True,
                 )
+
+            # ── Multi-season career matchup history ───────────────────────────
+            st.markdown("---")
+            st.markdown(
+                '<div class="section-header">Career Matchup History</div>',
+                unsafe_allow_html=True,
+            )
+            _seasons_to_check = ["2025-26", "2024-25", "2023-24", "2022-23"]
+            _hist_rows = []
+            for _hs in _seasons_to_check:
+                _csv = CACHE_DIR / f"matchups_{_hs.replace('-','_')}_Regular_Season.csv"
+                if not _csv.exists():
+                    continue
+                try:
+                    _hdf = pd.read_csv(_csv)
+                    _pair = _hdf[
+                        (_hdf["OFF_PLAYER_ID"] == off_pid) &
+                        (_hdf["DEF_PLAYER_ID"] == def_pid)
+                    ]
+                    if _pair.empty:
+                        _hist_rows.append({"Season": _hs, "Poss": "—", "PPP": "—", "FG%": "—", "3PM/A": "—", "_poss_raw": 0})
+                    else:
+                        _hr = _pair.iloc[0]
+                        _poss = float(_hr.get("PARTIAL_POSS", 0) or 0)
+                        _pts  = float(_hr.get("PLAYER_PTS", 0)  or 0)
+                        _ppp  = _pts / _poss if _poss > 0 else None
+                        _fgp  = float(_hr.get("MATCHUP_FG_PCT", 0) or 0)
+                        _fg3m = int(_hr.get("MATCHUP_FG3M", 0) or 0)
+                        _fg3a = int(_hr.get("MATCHUP_FG3A", 0) or 0)
+                        _hist_rows.append({
+                            "Season": _hs,
+                            "Poss":   f"{_poss:.0f}" if _poss > 0 else "—",
+                            "PPP":    f"{_ppp:.3f}"  if _ppp  is not None else "—",
+                            "FG%":    f"{_fgp:.1%}"  if _poss > 0 else "—",
+                            "3PM/A":  f"{_fg3m}/{_fg3a}" if _poss > 0 else "—",
+                            "_poss_raw": _poss,
+                        })
+                except Exception:
+                    continue
+
+            if _hist_rows:
+                # Weighted aggregate row (weighted by possessions)
+                _total_poss = sum(r["_poss_raw"] for r in _hist_rows)
+                _seasons_with_data = [r for r in _hist_rows if r["_poss_raw"] > 0]
+                _n_seasons = len(_seasons_with_data)
+                _hist_rows_with_agg = _hist_rows  # default: no agg row when no data
+
+                if _total_poss > 0:
+                    # Re-read CSVs to compute weighted PPP and FG%
+                    _w_ppp_num = 0.0; _w_fg_num = 0.0
+                    for _hs2 in _seasons_to_check:
+                        _csv2 = CACHE_DIR / f"matchups_{_hs2.replace('-','_')}_Regular_Season.csv"
+                        if not _csv2.exists():
+                            continue
+                        try:
+                            _hdf2 = pd.read_csv(_csv2)
+                            _pair2 = _hdf2[
+                                (_hdf2["OFF_PLAYER_ID"] == off_pid) &
+                                (_hdf2["DEF_PLAYER_ID"] == def_pid)
+                            ]
+                            if not _pair2.empty:
+                                _hr2  = _pair2.iloc[0]
+                                _p2   = float(_hr2.get("PARTIAL_POSS", 0) or 0)
+                                _pt2  = float(_hr2.get("PLAYER_PTS", 0)   or 0)
+                                _fg2  = float(_hr2.get("MATCHUP_FG_PCT", 0) or 0)
+                                _w_ppp_num += _pt2
+                                _w_fg_num  += _fg2 * _p2
+                        except Exception:
+                            continue
+                    _w_ppp = _w_ppp_num / _total_poss if _total_poss else None
+                    _w_fg  = _w_fg_num  / _total_poss if _total_poss else None
+
+                    _agg_label = (
+                        f"**Weighted career matchup — {_total_poss:.0f} total possessions "
+                        f"across {_n_seasons} season{'s' if _n_seasons != 1 else ''}**"
+                        if _total_poss >= 10
+                        else f"**Small sample — {_total_poss:.0f} possessions. Directional only.**"
+                    )
+                    st.markdown(_agg_label)
+
+                    # Aggregate row at the top in bold
+                    _agg_row = {
+                        "Season": "Weighted avg",
+                        "Poss":   f"{_total_poss:.0f}",
+                        "PPP":    f"{_w_ppp:.3f}" if _w_ppp is not None else "—",
+                        "FG%":    f"{_w_fg:.1%}"  if _w_fg  is not None else "—",
+                        "3PM/A":  "—",
+                        "_poss_raw": _total_poss,
+                        "_is_agg":   True,
+                    }
+                    _hist_rows_with_agg = [_agg_row] + _hist_rows
+
+                _display_rows = [{k: v for k, v in r.items()
+                                  if k not in ("_poss_raw", "_is_agg")} for r in _hist_rows_with_agg]
+                _hist_df = pd.DataFrame(_display_rows)
+                _current_season = st.session_state.get("season", "2025-26")
+
+                def _highlight_hist(row):
+                    styles = []
+                    for col in row.index:
+                        if row.name == 0:  # aggregate row
+                            styles.append("font-weight: bold; background-color: rgba(245,158,11,0.12);")
+                        elif row["Season"] == _current_season:
+                            styles.append("font-weight: bold; background-color: rgba(59,130,246,0.18);")
+                        else:
+                            styles.append("")
+                    return styles
+
+                styled_hist = _hist_df.style.apply(_highlight_hist, axis=1)
+                st.dataframe(styled_hist, hide_index=True, use_container_width=True)
+            else:
+                st.markdown(
+                    '<div class="info-box">No cached season data available to build career matchup history. '
+                    'Load additional seasons to populate this table.</div>',
+                    unsafe_allow_html=True,
+                )
+
         else:
             if not off_player:
                 st.warning(f"'{off_sel}' not found in offensive player set.")
@@ -1141,6 +1261,14 @@ with tab4:
                         def_pid, st.session_state.get("season", "2025-26"),
                         st.session_state.get("season_type", "Regular Season"),
                     ) if def_pid else {}
+                    try:
+                        _off_career_df, _ = get_player_career_splits(off_pid)
+                    except Exception:
+                        _off_career_df = None
+                    try:
+                        _def_career_df, _ = get_player_career_splits(def_pid)
+                    except Exception:
+                        _def_career_df = None
                     report = generate_matchup_report(
                         edge, off_p, def_p,
                         graph.get_offensive_neighborhood(off_r, top_n=8),
@@ -1148,6 +1276,8 @@ with tab4:
                         st.session_state.api_key,
                         off_shot_zones=_off_zones,
                         def_shot_zones=_def_zones,
+                        off_career_df=_off_career_df,
+                        def_career_df=_def_career_df,
                     )
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {off_r} vs {def_r}")
@@ -1178,9 +1308,14 @@ with tab4:
                         pid, st.session_state.get("season", "2025-26"),
                         st.session_state.get("season_type", "Regular Season"),
                     ) if pid else {}
+                    try:
+                        _pp_career_df, _ = get_player_career_splits(pid)
+                    except Exception:
+                        _pp_career_df = None
                     report = generate_player_profile_report(
                         player, pp_r_role, hood, st.session_state.api_key,
                         shot_zones=_pp_zones,
+                        career_df=_pp_career_df,
                     )
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {pp_r_player} ({pp_r_role.title()})")
@@ -1381,6 +1516,10 @@ with tab7:
             key="cp_analyse",
         )
 
+        # Career DataFrame store so the panel can reuse what was fetched for drift scoring
+        if "cp_career_dfs" not in st.session_state:
+            st.session_state.cp_career_dfs = {}
+
         if _cp_analyse_btn or st.session_state.cp_matchup_drift:
             if _cp_analyse_btn:
                 # ── Step 1: Compute narrative drift for all offensive players ──
@@ -1393,9 +1532,12 @@ with tab7:
                     )
                     if _cpid not in st.session_state.cp_matchup_drift:
                         try:
-                            _cp_splits = get_player_career_splits(_cpid)
+                            _cp_career_df, _cp_wb = get_player_career_splits(_cpid)
                             _cp_pname = graph.players[_cpid].name if _cpid in graph.players else ""
-                            _cp_result = compute_drift(_cpid, _cp_splits, st.session_state.season, player_name=_cp_pname)
+                            _cp_result = compute_drift(_cpid, _cp_career_df, _cp_wb,
+                                                       st.session_state.season, player_name=_cp_pname)
+                            # Store career_df for reuse in panel display (no double-fetch)
+                            st.session_state.cp_career_dfs[_cpid] = _cp_career_df
                         except Exception:
                             _cp_result = None
                         st.session_state.cp_matchup_drift[_cpid] = _cp_result
@@ -1456,6 +1598,9 @@ with tab7:
                     f"min possessions filter."
                 )
             else:
+                # Track rendered pairs to prevent duplicate entries (dedup both directions)
+                _rendered_pairs: set = set()
+
                 for _mi, _m in enumerate(_cp_matchups):
                     _off_pid  = _m["off_pid"]
                     _def_pid  = _m["def_pid"]
@@ -1463,9 +1608,57 @@ with tab7:
                     _def_name = _m["def_player"]
                     _drift    = st.session_state.cp_matchup_drift.get(_off_pid)
 
+                    # Skip if the reverse pair was already rendered
+                    _pair_key = frozenset({_off_pid, _def_pid})
+                    if _pair_key in _rendered_pairs:
+                        continue
+                    _rendered_pairs.add(_pair_key)
+
                     # Headshots
                     _off_hs = _headshot_html(_off_pid, _off_name, 48, 36)
                     _def_hs = _headshot_html(_def_pid, _def_name, 48, 36)
+
+                    # ── Helper: build mini stat table rows (4 max: current + 3 prior) ──
+                    def _mini_table_rows(stats_for_stat, traj_dict, trend_dirs, stat_key, slabel):
+                        """Return list of (season, value_str, arrow) for the mini table."""
+                        seasons = traj_dict.get("seasons", [])
+                        values  = traj_dict.get("values",  [])
+                        if not seasons:
+                            return []
+                        arrow_map = {"up": "↑", "down": "↓", "flat": "→"}
+                        trend = trend_dirs.get(stat_key, "flat")
+                        arrow = arrow_map.get(trend, "→")
+                        fmt = ".1%" if ("pct" in stat_key or stat_key == "ft_rate") else ".1f"
+                        rows_out = []
+                        for s, v in zip(seasons[-4:], values[-4:]):  # last 4, ascending
+                            rows_out.append((s, f"{v:{fmt}}", arrow))
+                        rows_out.reverse()  # most recent first for display
+                        return rows_out
+
+                    def _render_mini_table(table_rows, stat_label, key_suffix):
+                        if not table_rows:
+                            return
+                        rows_html = "".join(
+                            f'<tr>'
+                            f'<td style="padding:2px 8px;color:#94a3b8;font-size:0.78rem;">{s}</td>'
+                            f'<td style="padding:2px 8px;font-family:\'JetBrains Mono\',monospace;'
+                            f'font-size:0.78rem;color:#e2e8f0;">{v}</td>'
+                            f'<td style="padding:2px 8px;font-size:0.82rem;color:#f59e0b;">{a}</td>'
+                            f'</tr>'
+                            for s, v, a in table_rows
+                        )
+                        st.markdown(
+                            f'<table style="border-collapse:collapse;margin:4px 0 8px 0;">'
+                            f'<thead><tr>'
+                            f'<th style="padding:2px 8px;color:#475569;font-size:0.72rem;'
+                            f'text-align:left;">Season</th>'
+                            f'<th style="padding:2px 8px;color:#475569;font-size:0.72rem;'
+                            f'text-align:left;">{stat_label}</th>'
+                            f'<th style="padding:2px 8px;color:#475569;font-size:0.72rem;'
+                            f'text-align:left;">Trend</th>'
+                            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+                            unsafe_allow_html=True,
+                        )
 
                     if _drift and _drift.get("flagged"):
                         _flag   = _drift["flag"]
@@ -1473,6 +1666,7 @@ with tab7:
                         _flabel = FLAG_LABEL.get(_flag, "")
                         _stat   = _drift["max_drift_stat"]
                         _slbl   = CP_STAT_LABELS.get(_stat, _stat)
+                        _trend_dirs = _drift.get("trend_directions", {})
 
                         # Use AI-generated text if available, else fall back to template
                         _ai_entry  = st.session_state.cp_ai_text.get(_off_pid, {})
@@ -1508,10 +1702,10 @@ with tab7:
                             unsafe_allow_html=True,
                         )
 
-                        # Sparkline for the flagged stat
+                        # Sparkline for the flagged stat — unique key prevents duplicate chart error
                         _traj = _drift["trajectories"].get(_stat, {})
                         if _traj.get("seasons") and len(_traj["seasons"]) >= 2:
-                            _spark_key = f"sparkline_{_off_name.replace(' ', '_')}_{_stat}_{_mi}"
+                            _spark_key = f"sparkline_{_off_pid}_{_stat}_{_mi}_panel"
                             st.plotly_chart(
                                 plot_sparkline(
                                     _traj["seasons"],
@@ -1523,9 +1717,24 @@ with tab7:
                                 config={"displayModeBar": False},
                                 key=_spark_key,
                             )
+
+                        # Mini stat table (flagged stat, 4 rows max)
+                        _mt_rows = _mini_table_rows(
+                            _drift.get("current_vals", {}), _traj, _trend_dirs, _stat, _slbl
+                        )
+                        _render_mini_table(_mt_rows, _slbl, f"{_off_pid}_{_stat}_{_mi}")
+
                     elif _drift and not _drift.get("flagged"):
-                        # Stable player — show actual stat summary
+                        # Stable player — show stable_summary + mini table for 2 most stable stats
                         _stable_txt = _drift.get("stable_summary", "")
+                        _trend_dirs = _drift.get("trend_directions", {})
+                        _ds_scores  = _drift.get("drift_scores", {})
+
+                        # Most stable = lowest |z-score|
+                        _stable_priority = [s for s in CP_STAT_LABELS if s in _ds_scores]
+                        _stable_sorted   = sorted(_stable_priority, key=lambda s: abs(_ds_scores.get(s, 0)))
+                        _stable_show     = _stable_sorted[:2]
+
                         st.markdown(
                             f'<div class="cp-entry" style="background:#131a2b; '
                             f'border-left: 4px solid #1e293b;">'
@@ -1536,11 +1745,21 @@ with tab7:
                             f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
                             f'</div>'
                             f'<div style="color:#475569; font-size:0.85rem;">'
-                            f'{_stable_txt if _stable_txt else "Scouting report is holding up — no significant narrative drift detected."}'
+                            f'{_stable_txt if _stable_txt else "No narrative drift detected — conventional scouting is holding up."}'
                             f'</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+
+                        # Mini table for each of the 2 most stable stats
+                        for _ss in _stable_show:
+                            _ss_traj = _drift.get("trajectories", {}).get(_ss, {})
+                            _ss_lbl  = CP_STAT_LABELS.get(_ss, _ss)
+                            _smt_rows = _mini_table_rows(
+                                _drift.get("current_vals", {}), _ss_traj, _trend_dirs, _ss, _ss_lbl
+                            )
+                            _render_mini_table(_smt_rows, _ss_lbl, f"{_off_pid}_{_ss}_{_mi}_stable")
+
                     else:
                         # No drift data computed yet
                         st.markdown(
@@ -1553,7 +1772,7 @@ with tab7:
                             f'({_m["off_team"]}) vs {_def_name} ({_m["def_team"]})</span></div>'
                             f'</div>'
                             f'<div style="color:#475569; font-size:0.85rem;">'
-                            f'No narrative drift detected — conventional scouting report is holding up.</div>'
+                            f'Run CounterPoint Analysis above to compute narrative drift.</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
@@ -1617,10 +1836,10 @@ with tab7:
                     )
                     if _lp.player_id not in st.session_state.cp_leaderboard_drift:
                         try:
-                            _lb_splits = get_player_career_splits(_lp.player_id)
+                            _lb_career_df, _lb_wb = get_player_career_splits(_lp.player_id)
                             _lb_result = compute_drift(
-                                _lp.player_id, _lb_splits, st.session_state.season,
-                                player_name=_lp.name,
+                                _lp.player_id, _lb_career_df, _lb_wb,
+                                st.session_state.season, player_name=_lp.name,
                             )
                         except Exception:
                             _lb_result = None

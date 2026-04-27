@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 import anthropic
+import pandas as pd
 
 from models import MatchupEdge, MatchupGraph, Player
 
@@ -126,6 +127,89 @@ def _fmt_shot_zones(zone_summary: Dict, player_name: str) -> str:
     return "\n".join(lines)
 
 
+def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
+    """
+    Format the multi-season career DataFrame into a compact LLM-readable block.
+    Includes a weighted baseline row and a current-vs-baseline delta line.
+    Returns empty string if career_df is empty or has fewer than 2 rows.
+    """
+    if career_df is None or career_df.empty or len(career_df) < 2:
+        return ""
+
+    def _pct(v):
+        if v is None:
+            return "—"
+        return f"{v:.0%}"
+
+    def _f1(v):
+        if v is None:
+            return "—"
+        return f"{v:.1f}"
+
+    lines = [
+        f"{player_name} career trajectory (most recent first, weighted toward recent):",
+        f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'eFG%':>6} {'USG%':>6} {'APG':>5}  trend_weight",
+    ]
+
+    for _, row in career_df.iterrows():
+        sid  = str(row.get("season_id", ""))
+        gp   = int(row.get("gp") or 0)
+        ppg  = _f1(row.get("ppg"))
+        f3   = _pct(row.get("fg3_pct"))
+        ts   = _pct(row.get("ts_pct"))
+        efg  = _pct(row.get("efg_pct"))
+        apg  = _f1(row.get("apg") if row.get("apg") is not None else row.get("ast_pg"))
+        usg  = "—"   # not available from career splits
+        w    = row.get("weight", 0)
+        lines.append(
+            f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {efg:>6} {usg:>6} {apg:>5}  {w:.2f}"
+        )
+
+    # Weighted baseline row (stored in DataFrame as a consistent source)
+    # Derive from the weight column and stat columns
+    def _wbase(col):
+        col_vals = [(r[col], r.get("weight", 0)) for _, r in career_df.iterrows()
+                    if r.get(col) is not None]
+        if not col_vals:
+            return None
+        num   = sum(v * w for v, w in col_vals)
+        denom = sum(w for _, w in col_vals)
+        return num / denom if denom else None
+
+    b_ppg = _wbase("ppg");  b_f3 = _wbase("fg3_pct")
+    b_ts  = _wbase("ts_pct"); b_efg = _wbase("efg_pct"); b_apg = _wbase("ast_pg")
+
+    lines.append(
+        f"Weighted baseline: PPG {_f1(b_ppg)} | 3P% {_pct(b_f3)} | "
+        f"TS% {_pct(b_ts)} | eFG% {_pct(b_efg)} | APG {_f1(b_apg)}"
+    )
+
+    # Current season vs weighted baseline delta
+    curr = career_df.iloc[0]
+    def _delta_pct(cur, base):
+        if cur is None or base is None:
+            return "—"
+        d = cur - base
+        return f"{d:+.0%}"
+
+    def _delta_f(cur, base):
+        if cur is None or base is None:
+            return "—"
+        d = cur - base
+        return f"{d:+.1f}"
+
+    lines.append(
+        f"Current season vs weighted baseline: "
+        f"PPG {_delta_f(curr.get('ppg'), b_ppg)} | "
+        f"3P% {_delta_pct(curr.get('fg3_pct'), b_f3)} | "
+        f"TS% {_delta_pct(curr.get('ts_pct'), b_ts)} | "
+        f"eFG% {_delta_pct(curr.get('efg_pct'), b_efg)} | "
+        f"APG {_delta_f(curr.get('ast_pg'), b_apg)}"
+    )
+
+    return "\n".join(lines)
+
+
 def _fmt_similar_defenders(similar_list: List[Dict], top_n: int = 5) -> str:
     if not similar_list:
         return "No similar defenders found."
@@ -159,7 +243,11 @@ SYSTEM_PROMPT = (
     "6. Do not add any title, header, subtitle, or preamble to the report. "
     "Start directly with the first section heading. No 'INTERNAL SCOUTING REPORT', "
     "no 'Prepared for Coaching Staff', no matchup title line — none of that. "
-    "Structure the report with short labeled sections. Aim for 300-450 words."
+    "Structure the report with short labeled sections. Aim for 300-450 words. "
+    "7. When career trajectory data is provided, use it to contextualize current season performance — "
+    "note whether this season represents a continuation of a trend or a departure from it. "
+    "Do not write a separate career section. Weave it into the analysis where it adds meaning. "
+    "Current season stats always lead."
 )
 
 
@@ -172,6 +260,8 @@ def generate_matchup_report(
     api_key: str,
     off_shot_zones: Optional[Dict] = None,
     def_shot_zones: Optional[Dict] = None,
+    off_career_df: Optional[pd.DataFrame] = None,
+    def_career_df: Optional[pd.DataFrame] = None,
 ) -> str:
     """Generate a scouting report for a specific head-to-head matchup."""
     off_zone_ctx = _fmt_shot_zones(off_shot_zones or {}, off_player.name)
@@ -185,12 +275,19 @@ def generate_matchup_report(
         if def_zone_ctx:
             zone_section += f"\n\n{def_zone_ctx}"
 
+    # Career trajectory blocks (prepended to each player's context when available)
+    off_career_ctx = _fmt_career_trajectory(off_career_df, off_player.name) if off_career_df is not None and not off_career_df.empty else ""
+    def_career_ctx = _fmt_career_trajectory(def_career_df, def_player.name) if def_career_df is not None and not def_career_df.empty else ""
+
+    off_career_section = f"\n\n=== {off_player.name.upper()} CAREER TRAJECTORY ===\n{off_career_ctx}" if off_career_ctx else ""
+    def_career_section = f"\n\n=== {def_player.name.upper()} CAREER TRAJECTORY ===\n{def_career_ctx}" if def_career_ctx else ""
+
     context = f"""
 === OFFENSIVE PLAYER ===
-{_fmt_player_bio(off_player)}
+{_fmt_player_bio(off_player)}{off_career_section}
 
 === DEFENSIVE PLAYER ===
-{_fmt_player_bio(def_player)}
+{_fmt_player_bio(def_player)}{def_career_section}
 
 === HEAD-TO-HEAD MATCHUP ===
 {_fmt_matchup(edge, off_player.name, def_player.name)}
@@ -226,14 +323,18 @@ def generate_player_profile_report(
     neighborhood: List[Dict],
     api_key: str,
     shot_zones: Optional[Dict] = None,
+    career_df: Optional[pd.DataFrame] = None,
 ) -> str:
     """Generate a player scouting report based on their full matchup profile."""
     zone_ctx = _fmt_shot_zones(shot_zones or {}, player.name)
     zone_section = f"\n\n=== SHOT DISTRIBUTION ===\n{zone_ctx}" if zone_ctx else ""
 
+    career_ctx = _fmt_career_trajectory(career_df, player.name) if career_df is not None and not career_df.empty else ""
+    career_section = f"\n\n=== CAREER TRAJECTORY ===\n{career_ctx}" if career_ctx else ""
+
     context = f"""
 === PLAYER PROFILE ===
-{_fmt_player_bio(player)}
+{_fmt_player_bio(player)}{career_section}
 
 === MATCHUP NEIGHBORHOOD ({role.upper()}) ===
 {_fmt_neighborhood_summary(neighborhood, role=role, top_n=6)}{zone_section}
