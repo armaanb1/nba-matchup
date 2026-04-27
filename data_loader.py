@@ -164,9 +164,15 @@ def load_matchup_data(season: str = "2024-25", season_type: str = "Regular Seaso
 
     if cache_path.exists():
         df = pd.read_csv(cache_path)
+        if df.empty:
+            cache_path.unlink()
+            df = _fetch_matchup_data(season, season_type)
+            if not df.empty:
+                df.to_csv(cache_path, index=False)
     else:
         df = _fetch_matchup_data(season, season_type)
-        df.to_csv(cache_path, index=False)
+        if not df.empty:
+            df.to_csv(cache_path, index=False)
 
     return df[df["PARTIAL_POSS"] >= min_possessions].copy()
 
