@@ -125,6 +125,11 @@ def _fmt_shot_zones(zone_summary: Dict, player_name: str) -> str:
     return "\n".join(lines)
 
 
+def fmt_career_context(career_df: pd.DataFrame, player_name: str) -> str:
+    """Public alias — formats career splits for use as LLM context."""
+    return _fmt_career_trajectory(career_df, player_name)
+
+
 def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
     """
     Format the multi-season career DataFrame into a compact LLM-readable block.

@@ -29,6 +29,7 @@ from data_loader import (
 from nba_api.stats.static import players as _nba_players_static
 from llm_reports import (
     ANALYST_SYSTEM_PROMPT,
+    fmt_career_context,
     generate_matchup_report,
     generate_player_profile_report,
     generate_playoff_matchup_keys,
@@ -1470,10 +1471,36 @@ with tab4:
 
         if st.button("Ask", type="primary", disabled=not st.session_state.api_key):
             if analyst_question.strip():
+                # Detect NBA player names in the question and inject career data
+                _q_text = analyst_question.strip()
+                _all_nba = {p["full_name"].lower(): p for p in _nba_players_static.get_players()}
+                _words = _q_text.replace("'s", "").replace("'s", "").split()
+                _detected = {}
+                for _n in [3, 2]:
+                    for _i in range(len(_words) - _n + 1):
+                        _candidate = " ".join(_words[_i:_i+_n])
+                        _clean = "".join(c for c in _candidate if c.isalpha() or c in " '").strip()
+                        if _clean.lower() in _all_nba and _all_nba[_clean.lower()]["id"] not in _detected:
+                            _detected[_all_nba[_clean.lower()]["id"]] = _clean
+
+                _career_context = ""
+                if _detected:
+                    _career_parts = []
+                    for _pid, _pname in list(_detected.items())[:3]:  # cap at 3 players
+                        _cdf, _ = _get_career_df_fast(_pid)
+                        if _cdf is not None and not _cdf.empty:
+                            _career_parts.append(fmt_career_context(_cdf, _pname))
+                    if _career_parts:
+                        _career_context = (
+                            "\n\n=== CAREER DATA (from NBA Stats API — cite these numbers) ===\n"
+                            + "\n\n".join(_career_parts)
+                        )
+
                 prompt = (
-                    f"Question: {analyst_question.strip()}\n\n"
+                    f"Question: {_q_text}\n\n"
                     f"Answer this at the depth a coaching staff would expect from a senior scout. "
                     f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument."
+                    f"{_career_context}"
                 )
                 with st.spinner("The analyst is thinking…"):
                     _analyst_report = _call_anthropic(
