@@ -1504,7 +1504,10 @@ with tab4:
                 prompt = (
                     f"Question: {_q_text}\n\n"
                     f"Answer this at the depth a coaching staff would expect from a senior scout. "
-                    f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument."
+                    f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument. "
+                    f"When citing statistics, always lead with the CURRENT SEASON figure first. "
+                    f"Only reference a past season if it shows a meaningful trend — and when you do, "
+                    f"you must also state what the current season number is."
                     f"{_career_context}"
                 )
                 with st.spinner("The analyst is thinking…"):
