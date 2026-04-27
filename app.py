@@ -40,6 +40,7 @@ from visualizations import (
     plot_player_stats_bar,
     plot_ppp_heatmap,
     plot_shot_chart,
+    plot_shot_chart_zones,
     plot_similarity_comparison,
     plot_similarity_scores,
     plot_sparkline,
@@ -729,10 +730,11 @@ with tab1:
 
             # Full stats table
             with st.expander("Full Matchup Stats Table"):
-                st.dataframe(
-                    pd.DataFrame([edge.to_dict()]).T.rename(columns={0: "Value"}),
-                    use_container_width=True,
+                _raw = edge.to_dict()
+                _stats_df = pd.DataFrame(
+                    {"Stat": list(_raw.keys()), "Value": [str(v) for v in _raw.values()]}
                 )
+                st.dataframe(_stats_df, hide_index=True, use_container_width=True)
 
             # ── Multi-season career matchup history ───────────────────────────
             st.markdown("---")
@@ -1061,54 +1063,53 @@ with tab2:
                         ]
                     st.dataframe(pd.DataFrame(disp), hide_index=True, use_container_width=True)
 
-            # ---- Shot Chart ----
+            # ---- Shot Zone Chart ----
             if pid:
                 st.markdown("---")
                 st.markdown(
-                    f'<div class="section-header">{player.name} — Shot Chart</div>',
+                    f'<div class="section-header">{player.name} — Shot Zone Chart</div>',
                     unsafe_allow_html=True,
                 )
-                _sc_season = str(st.session_state.get("season", "2025-26")).replace("-", "_")
-                _sc_stype = str(st.session_state.get("season_type", "Regular Season")).replace(" ", "_")
-                _shot_cache_key = f"sc_{pid}_{_sc_season}_{_sc_stype}"
-                if _shot_cache_key not in st.session_state:
-                    with st.spinner("Loading shot chart…"):
-                        st.session_state[_shot_cache_key] = get_player_shot_chart(
+                _sc_zone_key = f"zones_{pid}_{st.session_state.get('season','2025-26')}_{st.session_state.get('season_type','Regular Season')}"
+                if _sc_zone_key not in st.session_state:
+                    with st.spinner("Loading shot zones…"):
+                        st.session_state[_sc_zone_key] = get_player_shot_zones(
                             int(pid),
                             season=st.session_state.get("season", "2025-26"),
                             season_type=st.session_state.get("season_type", "Regular Season"),
                         )
-                _shot_df = st.session_state[_shot_cache_key]
-                if _shot_df is not None and not _shot_df.empty:
+                _zone_summary = st.session_state[_sc_zone_key]
+                if _zone_summary:
                     sc1, sc2 = st.columns([2, 1])
                     with sc1:
                         st.plotly_chart(
-                            plot_shot_chart(_shot_df, player.name),
+                            plot_shot_chart_zones(_zone_summary, player.name),
                             use_container_width=True,
-                            key=f"shot_chart_fig_{pid}",
+                            key=f"zone_chart_{pid}",
                         )
                     with sc2:
-                        _zone_summary = get_player_shot_zones(
-                            int(pid),
-                            season=st.session_state.get("season", "2025-26"),
-                            season_type=st.session_state.get("season_type", "Regular Season"),
+                        st.markdown(
+                            '<h4 style="color:#F0A500;font-size:0.85rem;text-transform:uppercase;'
+                            'letter-spacing:0.08em;">Zone Breakdown</h4>',
+                            unsafe_allow_html=True,
                         )
-                        if _zone_summary:
-                            st.markdown(
-                                '<h4 style="color:#F0A500;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.08em;">Zone Breakdown</h4>',
-                                unsafe_allow_html=True,
-                            )
-                            _zone_rows = []
-                            for _zone, _zstats in sorted(_zone_summary.items(), key=lambda x: -x[1]["freq"]):
-                                _zone_rows.append({
-                                    "Zone": _zone,
-                                    "FGA": _zstats["fga"],
-                                    "FG%": f"{_zstats['pct']:.1%}",
-                                    "Freq": f"{_zstats['freq']:.0%}",
-                                })
-                            st.dataframe(pd.DataFrame(_zone_rows), hide_index=True, use_container_width=True)
+                        _zone_rows = []
+                        for _zone, _zs in sorted(_zone_summary.items(), key=lambda x: -x[1]["freq"]):
+                            _zone_rows.append({
+                                "Zone":  _zone,
+                                "FGA":   _zs["fga"],
+                                "FGM":   _zs["fgm"],
+                                "FG%":   f"{_zs['pct']:.1%}",
+                                "Freq":  f"{_zs['freq']:.0%}",
+                            })
+                        st.dataframe(
+                            pd.DataFrame(_zone_rows), hide_index=True, use_container_width=True
+                        )
+                        st.caption(
+                            "Color key — green: above league avg | amber: near avg | red: below avg"
+                        )
                 else:
-                    st.info("Shot chart data not available for this player/season.")
+                    st.info("Shot zone data not available for this player/season.")
 
 
 # ===========================================================================

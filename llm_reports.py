@@ -130,84 +130,103 @@ def _fmt_shot_zones(zone_summary: Dict, player_name: str) -> str:
 def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
     """
     Format the multi-season career DataFrame into a compact LLM-readable block.
-    Includes a weighted baseline row and a current-vs-baseline delta line.
-    Returns empty string if career_df is empty or has fewer than 2 rows.
+    Returns empty string if career_df is empty, has fewer than 2 rows, or on any error.
     """
-    if career_df is None or career_df.empty or len(career_df) < 2:
-        return ""
+    try:
+        if career_df is None or career_df.empty or len(career_df) < 2:
+            return ""
 
-    def _pct(v):
-        if v is None:
-            return "—"
-        return f"{v:.0%}"
+        import math
 
-    def _f1(v):
-        if v is None:
-            return "—"
-        return f"{v:.1f}"
+        def _ok(v) -> bool:
+            """True when v is a usable finite number (not None, NaN, or inf)."""
+            if v is None:
+                return False
+            try:
+                return math.isfinite(float(v))
+            except (TypeError, ValueError):
+                return False
 
-    lines = [
-        f"{player_name} career trajectory (most recent first, weighted toward recent):",
-        f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'eFG%':>6} {'USG%':>6} {'APG':>5}  trend_weight",
-    ]
+        def _pct(v) -> str:
+            return f"{float(v):.0%}" if _ok(v) else "—"
 
-    for _, row in career_df.iterrows():
-        sid  = str(row.get("season_id", ""))
-        gp   = int(row.get("gp") or 0)
-        ppg  = _f1(row.get("ppg"))
-        f3   = _pct(row.get("fg3_pct"))
-        ts   = _pct(row.get("ts_pct"))
-        efg  = _pct(row.get("efg_pct"))
-        apg  = _f1(row.get("apg") if row.get("apg") is not None else row.get("ast_pg"))
-        usg  = "—"   # not available from career splits
-        w    = row.get("weight", 0)
+        def _f1(v) -> str:
+            return f"{float(v):.1f}" if _ok(v) else "—"
+
+        lines = [
+            f"{player_name} career trajectory (most recent first, weighted toward recent):",
+            f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'eFG%':>6} {'APG':>5}  weight",
+        ]
+
+        for _, row in career_df.iterrows():
+            sid = str(row.get("season_id", ""))
+            gp_raw = row.get("gp")
+            gp  = int(float(gp_raw)) if _ok(gp_raw) else 0
+            ppg = _f1(row.get("ppg"))
+            f3  = _pct(row.get("fg3_pct"))
+            ts  = _pct(row.get("ts_pct"))
+            efg = _pct(row.get("efg_pct"))
+            apg_raw = row.get("apg") if _ok(row.get("apg")) else row.get("ast_pg")
+            apg = _f1(apg_raw)
+            w_raw = row.get("weight", 0)
+            w   = float(w_raw) if _ok(w_raw) else 0.0
+            lines.append(
+                f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {efg:>6} {apg:>5}  {w:.2f}"
+            )
+
+        def _wbase(col):
+            """Decay-weighted average for col, filtering NaN/None values."""
+            col_vals = []
+            for _, r in career_df.iterrows():
+                v = r.get(col)
+                wt = r.get("weight", 0)
+                if _ok(v) and _ok(wt):
+                    col_vals.append((float(v), float(wt)))
+            if not col_vals:
+                return None
+            num   = sum(v * wt for v, wt in col_vals)
+            denom = sum(wt for _, wt in col_vals)
+            result = num / denom if denom else None
+            return result if _ok(result) else None
+
+        b_ppg = _wbase("ppg")
+        b_f3  = _wbase("fg3_pct")
+        b_ts  = _wbase("ts_pct")
+        b_efg = _wbase("efg_pct")
+        b_apg = _wbase("ast_pg")
+
         lines.append(
-            f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {efg:>6} {usg:>6} {apg:>5}  {w:.2f}"
+            f"Weighted baseline: PPG {_f1(b_ppg)} | 3P% {_pct(b_f3)} | "
+            f"TS% {_pct(b_ts)} | eFG% {_pct(b_efg)} | APG {_f1(b_apg)}"
         )
 
-    # Weighted baseline row (stored in DataFrame as a consistent source)
-    # Derive from the weight column and stat columns
-    def _wbase(col):
-        col_vals = [(r[col], r.get("weight", 0)) for _, r in career_df.iterrows()
-                    if r.get(col) is not None]
-        if not col_vals:
-            return None
-        num   = sum(v * w for v, w in col_vals)
-        denom = sum(w for _, w in col_vals)
-        return num / denom if denom else None
+        curr = career_df.iloc[0]
 
-    b_ppg = _wbase("ppg");  b_f3 = _wbase("fg3_pct")
-    b_ts  = _wbase("ts_pct"); b_efg = _wbase("efg_pct"); b_apg = _wbase("ast_pg")
+        def _delta_pct(cur, base) -> str:
+            if not _ok(cur) or not _ok(base):
+                return "—"
+            d = float(cur) - float(base)
+            return f"{d:+.0%}" if _ok(d) else "—"
 
-    lines.append(
-        f"Weighted baseline: PPG {_f1(b_ppg)} | 3P% {_pct(b_f3)} | "
-        f"TS% {_pct(b_ts)} | eFG% {_pct(b_efg)} | APG {_f1(b_apg)}"
-    )
+        def _delta_f(cur, base) -> str:
+            if not _ok(cur) or not _ok(base):
+                return "—"
+            d = float(cur) - float(base)
+            return f"{d:+.1f}" if _ok(d) else "—"
 
-    # Current season vs weighted baseline delta
-    curr = career_df.iloc[0]
-    def _delta_pct(cur, base):
-        if cur is None or base is None:
-            return "—"
-        d = cur - base
-        return f"{d:+.0%}"
+        lines.append(
+            f"Current season vs weighted baseline: "
+            f"PPG {_delta_f(curr.get('ppg'), b_ppg)} | "
+            f"3P% {_delta_pct(curr.get('fg3_pct'), b_f3)} | "
+            f"TS% {_delta_pct(curr.get('ts_pct'), b_ts)} | "
+            f"eFG% {_delta_pct(curr.get('efg_pct'), b_efg)} | "
+            f"APG {_delta_f(curr.get('ast_pg'), b_apg)}"
+        )
 
-    def _delta_f(cur, base):
-        if cur is None or base is None:
-            return "—"
-        d = cur - base
-        return f"{d:+.1f}"
+        return "\n".join(lines)
 
-    lines.append(
-        f"Current season vs weighted baseline: "
-        f"PPG {_delta_f(curr.get('ppg'), b_ppg)} | "
-        f"3P% {_delta_pct(curr.get('fg3_pct'), b_f3)} | "
-        f"TS% {_delta_pct(curr.get('ts_pct'), b_ts)} | "
-        f"eFG% {_delta_pct(curr.get('efg_pct'), b_efg)} | "
-        f"APG {_delta_f(curr.get('ast_pg'), b_apg)}"
-    )
-
-    return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _fmt_similar_defenders(similar_list: List[Dict], top_n: int = 5) -> str:

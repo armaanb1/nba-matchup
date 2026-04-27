@@ -937,6 +937,204 @@ _ZONE_COLOR_MAP = {
     "Backcourt":               "#475569",   # muted
 }
 
+# League-average FG% by zone (used for relative efficiency coloring)
+_ZONE_LEAGUE_AVG: Dict[str, float] = {
+    "Restricted Area":       0.640,
+    "In The Paint (Non-RA)": 0.395,
+    "Mid-Range":             0.405,
+    "Left Corner 3":         0.387,
+    "Right Corner 3":        0.387,
+    "Above the Break 3":     0.356,
+    "Backcourt":             0.050,
+}
+
+
+def _zone_eff_color(pct: float, zone: str, alpha: float = 0.60) -> str:
+    """RGBA fill color for a zone based on FG% vs league average."""
+    avg  = _ZONE_LEAGUE_AVG.get(zone, 0.40)
+    diff = pct - avg
+    if diff >= 0.07:
+        r, g, b = 16,  185, 129   # strong green
+    elif diff >= 0.025:
+        r, g, b = 52,  211, 153   # green
+    elif diff >= -0.025:
+        r, g, b = 245, 158, 11    # amber — near average
+    elif diff >= -0.07:
+        r, g, b = 239, 68,  68    # red
+    else:
+        r, g, b = 185, 28,  28    # strong red
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _build_zone_polygons() -> Dict[str, tuple]:
+    """Return {zone: (xs, ys)} approximate polygon vertices for each shot zone."""
+    BL       = -47.5   # baseline y
+    FT       =  142.5  # free throw line y
+    RA_R     =   40.0  # restricted area radius
+    TP_R     =  237.5  # 3-point arc radius
+    CORNER_Y =   92.5  # y where 3pt side line ends
+
+    def _arc(cx, cy, r, a0, a1, n=50):
+        angles = np.linspace(a0, a1, n)
+        return list(cx + r * np.cos(angles)), list(cy + r * np.sin(angles))
+
+    # angle (from +x axis) where the 3pt arc meets x = ±220 (corner side lines)
+    angle_corner = np.arccos(220 / TP_R)   # ≈ 22.6°
+
+    polys: Dict[str, tuple] = {}
+
+    # ── Restricted Area ───────────────────────────────────────────────────────
+    ax, ay = _arc(0, 0, RA_R, np.pi, 0)
+    polys["Restricted Area"] = (
+        ax + [RA_R, -RA_R],
+        ay + [BL, BL],
+    )
+
+    # ── In The Paint (Non-RA) ── full paint rect; RA drawn on top ─────────────
+    polys["In The Paint (Non-RA)"] = (
+        [-80, -80, 80, 80],
+        [BL,  FT,  FT, BL],
+    )
+
+    # ── Corner 3s ─────────────────────────────────────────────────────────────
+    polys["Left Corner 3"]  = ([-250, -250, -220, -220], [BL, CORNER_Y, CORNER_Y, BL])
+    polys["Right Corner 3"] = ([ 220,  220,  250,  250], [BL, CORNER_Y, CORNER_Y, BL])
+
+    # ── Mid-Range: inside 3pt arc, outside paint, excluding corners ───────────
+    # Outer boundary: left 3pt side ↑ → arc over top → right 3pt side ↓ → baseline
+    ax2, ay2 = _arc(0, 0, TP_R, np.pi - angle_corner, angle_corner)
+    polys["Mid-Range"] = (
+        [-220, -220] + ax2 + [220,  220, -220],
+        [BL, CORNER_Y] + ay2 + [CORNER_Y, BL,  BL],
+    )
+
+    # ── Above the Break 3: beyond 3pt arc, excluding corners ─────────────────
+    ax3, ay3 = _arc(0, 0, TP_R, angle_corner, np.pi - angle_corner)
+    TOP = 430
+    polys["Above the Break 3"] = (
+        [220, 250, 250, -250, -250, -220] + ax3,
+        [CORNER_Y, CORNER_Y, TOP, TOP, CORNER_Y, CORNER_Y] + ay3,
+    )
+
+    return polys
+
+
+def plot_shot_chart_zones(zone_summary: Dict, player_name: str) -> go.Figure:
+    """
+    Zone-based half-court shot chart.
+
+    Each zone is filled with a color reflecting FG% vs league average:
+      green = above average, amber = near average, red = below average.
+    FG% and makes/attempts are annotated inside each zone.
+    Zones with zero attempts are shown in a muted neutral color.
+    """
+    zone_polys = _build_zone_polygons()
+
+    # Draw order: background zones first, then paint, then RA on top
+    DRAW_ORDER = [
+        "Mid-Range",
+        "Above the Break 3",
+        "Left Corner 3",
+        "Right Corner 3",
+        "In The Paint (Non-RA)",
+        "Restricted Area",
+    ]
+
+    # Approximate annotation centroids for each zone
+    _CENTROIDS: Dict[str, tuple] = {
+        "Restricted Area":       (  0,   -5),
+        "In The Paint (Non-RA)": (  0,   97),
+        "Mid-Range":             (  0,  210),
+        "Left Corner 3":         (-237,  22),
+        "Right Corner 3":        ( 237,  22),
+        "Above the Break 3":     (  0,  318),
+    }
+
+    traces     = []
+    annotations = []
+
+    for zone in DRAW_ORDER:
+        xs, ys = zone_polys.get(zone, ([], []))
+        if not xs:
+            continue
+
+        z      = zone_summary.get(zone, {})
+        fga    = z.get("fga", 0)
+        fgm    = z.get("fgm", 0)
+        pct    = z.get("pct", 0.0)
+        freq   = z.get("freq", 0.0)
+
+        if fga > 0:
+            fill_col = _zone_eff_color(pct, zone)
+            line_col = "rgba(255,255,255,0.25)"
+            label    = f"<b>{pct:.0%}</b>"
+            sub      = f"{fgm}/{fga} ({freq:.0%})"
+        else:
+            fill_col = "rgba(19,26,43,0.70)"
+            line_col = "rgba(255,255,255,0.12)"
+            label    = "<b>—</b>"
+            sub      = "0 att"
+
+        traces.append(go.Scatter(
+            x=list(xs) + [xs[0]],
+            y=list(ys) + [ys[0]],
+            fill="toself",
+            fillcolor=fill_col,
+            mode="lines",
+            line=dict(color=line_col, width=1.2),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
+        cx, cy = _CENTROIDS.get(zone, (0, 200))
+        annotations.append(dict(
+            x=cx, y=cy,
+            text=(
+                f"<span style='font-size:14px;font-weight:700;'>{label.replace('<b>','').replace('</b>','')}</span>"
+                f"<br><span style='font-size:9px;color:#cbd5e1;'>{sub}</span>"
+            ),
+            showarrow=False,
+            font=dict(size=12, color="#f1f5f9",
+                      family="'JetBrains Mono', 'DM Sans', monospace"),
+            align="center",
+        ))
+
+    # Invisible legend traces for color scale
+    _LEGEND = [
+        ("Well above avg",  _zone_eff_color(0.99, "Restricted Area")),
+        ("Above avg",       _zone_eff_color(0.70, "Restricted Area")),
+        ("Near average",    _zone_eff_color(0.64, "Restricted Area")),
+        ("Below avg",       _zone_eff_color(0.55, "Restricted Area")),
+        ("Well below avg",  _zone_eff_color(0.40, "Restricted Area")),
+    ]
+    for lbl, col in _LEGEND:
+        traces.append(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=12, color=col, symbol="square"),
+            name=lbl, showlegend=True,
+        ))
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        shapes=_draw_court_shapes(),
+        annotations=annotations,
+        xaxis=dict(range=[-265, 265], showgrid=False, zeroline=False,
+                   showticklabels=False, scaleanchor="y", scaleratio=1),
+        yaxis=dict(range=[-60, 430],  showgrid=False, zeroline=False,
+                   showticklabels=False),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=-0.12,
+            xanchor="center", x=0.5,
+            font=dict(size=10, color=FONT_COLOR),
+            bgcolor="rgba(0,0,0,0)",
+            itemsizing="constant",
+        ),
+        height=530,
+        **LAYOUT_DEFAULTS,
+    )
+    _clean_layout(fig, title=f"{player_name} — Shot Zone Chart")
+    return fig
+
 
 def plot_shot_chart(shot_df, player_name: str) -> go.Figure:
     """
