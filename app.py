@@ -531,6 +531,13 @@ with st.sidebar:
         with st.spinner(f"Loading {season} matchup data…"):
             try:
                 df = load_matchup_data(season, season_type, min_possessions=min_poss)
+                if df.empty and season_type == "Playoffs":
+                    st.warning(
+                        "The NBA stats API does not provide player matchup data "
+                        "(LeagueSeasonMatchups) for the Playoffs. "
+                        "Try **Regular Season** for full matchup graph features. "
+                        "Shot charts, player profiles, and team stats still work with Playoffs selected."
+                    )
                 g = MatchupGraph()
                 g.build_from_dataframe(df, min_possessions=min_poss)
                 st.session_state.graph = g
@@ -624,6 +631,26 @@ if not st.session_state.data_loaded or graph is None:
         unsafe_allow_html=True,
     )
     st.stop()
+
+if st.session_state.data_loaded and graph is not None and graph.graph.number_of_nodes() == 0:
+    _loaded_type = st.session_state.get("season_type", "")
+    if _loaded_type == "Playoffs":
+        st.markdown(
+            """
+            <div class="info-box" style="text-align:center; padding:40px; font-size:1.05rem;">
+                <b style="color:#F0A500; font-size:1.2rem;">Playoff Matchup Data Unavailable</b><br><br>
+                The NBA Stats API does not publish player-vs-player matchup data
+                (<code>LeagueSeasonMatchups</code>) for the Playoffs — this is an API limitation,
+                not a bug.<br><br>
+                <b>Switch to Regular Season</b> in the sidebar to use Matchup Lookup,
+                Defensive Similarity, Scouting Reports, and Graph Overview.<br><br>
+                <span style="color:#6B7280;">Shot charts, Player Profiles, and Team stats still
+                work with Playoffs selected.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.stop()
 
 # ---------------------------------------------------------------------------
 # Tabs
