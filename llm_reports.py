@@ -130,6 +130,16 @@ def fmt_career_context(career_df: pd.DataFrame, player_name: str) -> str:
     return _fmt_career_trajectory(career_df, player_name)
 
 
+def fmt_current_season_context(player: "Player", shot_zones: Optional[Dict] = None) -> str:
+    """Format a player's current-season enriched stats for use as LLM context."""
+    bio = _fmt_player_bio(player)
+    zones = _fmt_shot_zones(shot_zones or {}, player.name) if shot_zones else ""
+    parts = [f"=== {player.name.upper()} — THIS SEASON (enriched) ===", bio]
+    if zones:
+        parts.append(zones)
+    return "\n".join(parts)
+
+
 def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
     """
     Format the multi-season career DataFrame into a compact LLM-readable block.

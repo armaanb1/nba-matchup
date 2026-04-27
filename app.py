@@ -30,6 +30,7 @@ from nba_api.stats.static import players as _nba_players_static
 from llm_reports import (
     ANALYST_SYSTEM_PROMPT,
     fmt_career_context,
+    fmt_current_season_context,
     generate_matchup_report,
     generate_player_profile_report,
     generate_playoff_matchup_keys,
@@ -1489,13 +1490,23 @@ with tab4:
                 _career_context = ""
                 if _detected:
                     _career_parts = []
-                    for _pid, _pname in list(_detected.items())[:3]:  # cap at 3 players
+                    for _pid, _pname in list(_detected.items())[:3]:
+                        player_obj = graph.players.get(_pid) if graph else None
+                        # Current-season enriched stats (ratings, usage, shot zones)
+                        if player_obj:
+                            _zones = get_player_shot_zones(
+                                _pid,
+                                st.session_state.get("season", "2025-26"),
+                                st.session_state.get("season_type", "Regular Season"),
+                            )
+                            _career_parts.append(fmt_current_season_context(player_obj, _zones))
+                        # Career splits (multi-season trajectory)
                         _cdf, _ = _get_career_df_fast(_pid)
                         if _cdf is not None and not _cdf.empty:
                             _career_parts.append(fmt_career_context(_cdf, _pname))
                     if _career_parts:
                         _career_context = (
-                            "\n\n=== VERIFIED CAREER DATA (NBA Stats API) ===\n"
+                            "\n\n=== VERIFIED PLAYER DATA (NBA Stats API) ===\n"
                             "Cite numbers from this section with full confidence. "
                             "If a stat you want is not here, state the claim qualitatively — no estimates.\n\n"
                             + "\n\n".join(_career_parts)
