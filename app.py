@@ -1492,14 +1492,18 @@ with tab4:
                     _career_parts = []
                     for _pid, _pname in list(_detected.items())[:3]:
                         player_obj = graph.players.get(_pid) if graph else None
-                        # Current-season enriched stats (ratings, usage, shot zones)
+                        # Current-season enriched stats + neighborhood matchup data
                         if player_obj:
                             _zones = get_player_shot_zones(
                                 _pid,
                                 st.session_state.get("season", "2025-26"),
                                 st.session_state.get("season_type", "Regular Season"),
                             )
-                            _career_parts.append(fmt_current_season_context(player_obj, _zones))
+                            _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
+                            _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
+                            _career_parts.append(fmt_current_season_context(
+                                player_obj, _zones, _off_hood, _def_hood
+                            ))
                         # Career splits (multi-season trajectory)
                         _cdf, _ = _get_career_df_fast(_pid)
                         if _cdf is not None and not _cdf.empty:

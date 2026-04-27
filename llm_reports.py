@@ -130,13 +130,22 @@ def fmt_career_context(career_df: pd.DataFrame, player_name: str) -> str:
     return _fmt_career_trajectory(career_df, player_name)
 
 
-def fmt_current_season_context(player: "Player", shot_zones: Optional[Dict] = None) -> str:
+def fmt_current_season_context(
+    player: "Player",
+    shot_zones: Optional[Dict] = None,
+    off_neighborhood: Optional[List[Dict]] = None,
+    def_neighborhood: Optional[List[Dict]] = None,
+) -> str:
     """Format a player's current-season enriched stats for use as LLM context."""
     bio = _fmt_player_bio(player)
     zones = _fmt_shot_zones(shot_zones or {}, player.name) if shot_zones else ""
     parts = [f"=== {player.name.upper()} — THIS SEASON (enriched) ===", bio]
     if zones:
         parts.append(zones)
+    if off_neighborhood:
+        parts.append(_fmt_neighborhood_summary(off_neighborhood, role="offense", top_n=6))
+    if def_neighborhood:
+        parts.append(_fmt_neighborhood_summary(def_neighborhood, role="defense", top_n=6))
     return "\n".join(parts)
 
 
