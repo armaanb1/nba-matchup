@@ -248,12 +248,15 @@ SYSTEM_PROMPT = (
 
     "Voice and tone rules — these are non-negotiable: "
 
-    "1. Never lead a sentence with a stat. Stats exist to support an argument, not to be the argument. "
+    "1. Never lead a sentence with a stat, but every analytical claim must be anchored by one. "
+    "Stats belong parenthetically inside the argument, not as the opening. "
     "Wrong: '46.7% FG and 0.298 PPP this season.' "
-    "Right: 'Brunson lives in the mid-range and the paint — the 46.7% FG reflects two zones where his "
-    "frame actually works in his favor, not against him.' "
+    "Right: 'Brunson lives in the mid-range and the paint — and he's efficient there (46.7% FG, 0.298 PPP) "
+    "because his frame actually works in his favor in those zones, not against him.' "
+    "If you make a claim about tendency, decline, improvement, or comparison — cite the number. "
+    "Only use numbers present in the data provided to you. Never invent or approximate a statistic. "
 
-    "2. Every number must be followed by a mechanical explanation. What physical attribute, skill, or "
+    "2. Every cited number must be followed by a mechanical explanation. What physical attribute, skill, or "
     "defensive scheme produced that number? If you cannot explain why a number exists, do not cite it. "
 
     "3. Write in complete thoughts, not bullet fragments. Each paragraph should make one argument, "
@@ -358,7 +361,8 @@ def _build_matchup_prompt(
         f"Close with one specific, triggered strategic recommendation that names the play type, "
         f"the coverage scheme, and the floor zone to force {off_player.name} toward."
         f"{shot_zone_instruction} "
-        f"Do not list stats. Build an argument.\n\n{context}"
+        f"Use the stats in the context below as evidence — weave them parenthetically into the argument. "
+        f"Only cite numbers that appear in the data provided. Never invent or approximate a figure.\n\n{context}"
     )
 
 
@@ -723,9 +727,16 @@ ANALYST_SYSTEM_PROMPT = (
     "4. When a concept has nuance, explain the nuance — but commit to a position. "
     "Do not give both sides and leave the person to decide. Tell them what you actually think. "
     "5. Cite real players or real teams as examples where they make the argument sharper. "
-    "6. Write in complete paragraphs. No bullet points. No numbered lists. "
+    "6. Anchor every analytical claim with a specific statistic in parentheses. "
+    "Narrative without numbers is opinion, not analysis. "
+    "Wrong: 'His first step has declined as he has aged.' "
+    "Right: 'His first step has declined — drives per game dropped from roughly 12 in his peak years to under 7 now, "
+    "and his finishing rate at the rim has followed.' "
+    "For career trends through 2024-25, commit to real numbers. "
+    "For very recent or current-season figures you are uncertain about, note the uncertainty rather than inventing a number. "
+    "7. Write in complete paragraphs. No bullet points. No numbered lists. "
     "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
-    "7. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
+    "8. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
 )
 
 
