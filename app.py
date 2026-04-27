@@ -1506,18 +1506,20 @@ with tab4:
                     _data_preamble = (
                         f"{_career_context}\n\n"
                         f"The numbers above are verified facts from the NBA Stats API. "
-                        f"When you make a claim about any player listed above, "
-                        f"you must cite the exact figure from the table. "
-                        f"Do not say a stat is unavailable if it appears in the table.\n\n"
+                        f"For game planning questions, weight the CURRENT SEASON stats heavily — "
+                        f"that is what the player is doing right now and what a coaching staff must prepare for. "
+                        f"Career history is useful context for understanding if a trend is new or established, "
+                        f"but it does not override this season's numbers. "
+                        f"If a player's current season diverges from their career reputation, flag it explicitly "
+                        f"and lead your answer with what they are doing now. "
+                        f"Do not say a stat is unavailable if it appears in the table above.\n\n"
                     )
 
                 prompt = (
                     f"{_data_preamble}"
                     f"Question: {_q_text}\n\n"
                     f"Answer this at the depth a coaching staff would expect from a senior scout. "
-                    f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument. "
-                    f"Lead with current season numbers. Only reference past seasons to show a trend, "
-                    f"and always pair the past number with the current one."
+                    f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument."
                 )
                 if _detected:
                     st.caption(f"Players detected: {', '.join(_detected.values())} — career data injected")
