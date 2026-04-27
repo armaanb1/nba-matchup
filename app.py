@@ -16,6 +16,8 @@ from typing import Dict
 from data_loader import (
     CACHE_DIR,
     enrich_graph,
+    find_nba_player,
+    get_player_bio,
     get_player_shot_chart,
     get_player_shot_zones,
     get_playoff_series,
@@ -24,6 +26,7 @@ from data_loader import (
     get_team_stats_live,
     load_matchup_data,
 )
+from nba_api.stats.static import players as _nba_players_static
 from llm_reports import (
     ANALYST_SYSTEM_PROMPT,
     generate_matchup_report,
@@ -632,25 +635,19 @@ if not st.session_state.data_loaded or graph is None:
     )
     st.stop()
 
-if st.session_state.data_loaded and graph is not None and graph.graph.number_of_nodes() == 0:
-    _loaded_type = st.session_state.get("season_type", "")
-    if _loaded_type == "Playoffs":
-        st.markdown(
-            """
-            <div class="info-box" style="text-align:center; padding:40px; font-size:1.05rem;">
-                <b style="color:#F0A500; font-size:1.2rem;">Playoff Matchup Data Unavailable</b><br><br>
-                The NBA Stats API does not publish player-vs-player matchup data
-                (<code>LeagueSeasonMatchups</code>) for the Playoffs — this is an API limitation,
-                not a bug.<br><br>
-                <b>Switch to Regular Season</b> in the sidebar to use Matchup Lookup,
-                Defensive Similarity, Scouting Reports, and Graph Overview.<br><br>
-                <span style="color:#6B7280;">Shot charts, Player Profiles, and Team stats still
-                work with Playoffs selected.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.stop()
+_playoff_no_matchups = (
+    st.session_state.data_loaded
+    and graph is not None
+    and graph.graph.number_of_nodes() == 0
+    and st.session_state.get("season_type") == "Playoffs"
+)
+_PLAYOFF_MATCHUP_WARNING = (
+    '<div class="info-box" style="padding:20px;">'
+    "<b style='color:#F0A500;'>Playoff Matchup Data Unavailable</b><br>"
+    "The NBA Stats API does not publish player-vs-player matchup data for the Playoffs. "
+    "Switch to <b>Regular Season</b> in the sidebar to use this feature."
+    "</div>"
+)
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -673,9 +670,11 @@ with tab1:
     st.markdown('<div class="section-header">Matchup Lookup</div>', unsafe_allow_html=True)
     st.markdown("Search any offensive–defensive player pair for their head-to-head stats.")
 
-    all_names = sorted(set(graph.all_player_names("offense")) | set(graph.all_player_names("defense")))
-    off_names = graph.all_player_names("offense")
-    def_names = graph.all_player_names("defense")
+    if _playoff_no_matchups:
+        st.markdown(_PLAYOFF_MATCHUP_WARNING, unsafe_allow_html=True)
+    all_names = sorted(set(graph.all_player_names("offense")) | set(graph.all_player_names("defense"))) if not _playoff_no_matchups else []
+    off_names = graph.all_player_names("offense") if not _playoff_no_matchups else []
+    def_names = graph.all_player_names("defense") if not _playoff_no_matchups else []
 
     col1, col2 = st.columns(2)
     with col1:
@@ -971,18 +970,58 @@ with tab2:
     st.markdown('<div class="section-header">Player Profile</div>', unsafe_allow_html=True)
     st.markdown("Explore a player's full matchup neighborhood, stats, and graph centrality.")
 
+    if _playoff_no_matchups:
+        st.info(
+            "Matchup graph data is unavailable for Playoffs. "
+            "Shot charts and bio are shown below. "
+            "Matchup neighborhood and advanced stats require Regular Season data."
+        )
+
+    _pp_fallback_names = sorted([p["full_name"] for p in _nba_players_static.get_active_players()]) if _playoff_no_matchups else []
+    _pp_names = graph.all_player_names() if not _playoff_no_matchups else _pp_fallback_names
+
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        player_sel = st.selectbox("Player", graph.all_player_names(),
-                                  index=0, key="pp_player")
+        player_sel = st.selectbox("Player", _pp_names, index=0, key="pp_player")
     with col_b:
         role_sel = st.radio("Role", ["offense", "defense"], horizontal=True, key="pp_role")
 
     if player_sel:
         pid = graph.find_player_id(player_sel)
+        if pid is None and _playoff_no_matchups:
+            _static_match = find_nba_player(player_sel)
+            pid = int(_static_match["id"]) if _static_match else None
         player = graph.players.get(pid) if pid else None
 
-        if not player:
+        if not player and _playoff_no_matchups and pid:
+            _bio = get_player_bio(pid)
+            if _bio:
+                st.markdown("---")
+                _pp_hs = _headshot_html(pid, player_sel, 200, 150)
+                _pp_meta = " · ".join(filter(None, [
+                    _bio.get("position"), _bio.get("team"), _bio.get("height"),
+                    f"{_bio.get('weight')} lbs" if _bio.get("weight") else None
+                ]))
+                st.markdown(
+                    f'<div style="margin-bottom:12px;">{_pp_hs}</div>'
+                    f'<div class="player-badge" style="font-size:1.15rem;">{player_sel}</div>'
+                    f'<div style="color:#94a3b8;font-size:0.85rem;margin:4px 0 10px;">{_pp_meta}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(_stat_card("Player Bio", {k: v for k, v in _bio.items() if v}), unsafe_allow_html=True)
+                st.markdown("---")
+                st.markdown("**Shot Chart (Playoffs)**")
+                _sc_key = f"sc_{pid}_{st.session_state.get('season','2025-26')}_Playoffs"
+                if _sc_key not in st.session_state:
+                    with st.spinner("Loading shot chart…"):
+                        _sc_df = get_player_shot_chart(pid, st.session_state.get("season", "2025-26"), "Playoffs")
+                        st.session_state[_sc_key] = _sc_df
+                _sc_df = st.session_state.get(_sc_key, pd.DataFrame())
+                if not _sc_df.empty:
+                    st.plotly_chart(plot_shot_chart(_sc_df, player_sel), use_container_width=True)
+                else:
+                    st.info("No shot chart data available for this player in the playoffs.")
+        elif not player:
             st.warning("Player not found in graph.")
         else:
             st.markdown("---")
@@ -1178,7 +1217,9 @@ with tab3:
         "assignments, and scouting replacements."
     )
 
-    def_names_all = graph.all_player_names("defense")
+    if _playoff_no_matchups:
+        st.markdown(_PLAYOFF_MATCHUP_WARNING, unsafe_allow_html=True)
+    def_names_all = graph.all_player_names("defense") if not _playoff_no_matchups else []
     def_sel3 = st.selectbox("Select a Defender", def_names_all, key="ds_def")
     top_n3 = st.slider("Show top N similar defenders", 3, 15, 8)
 
@@ -1281,6 +1322,8 @@ with tab4:
         "Powered by Claude (Anthropic)."
     )
 
+    if _playoff_no_matchups:
+        st.markdown(_PLAYOFF_MATCHUP_WARNING, unsafe_allow_html=True)
     if not st.session_state.api_key:
         st.markdown(
             '<div class="info-box">⚠️ Enter your <b>Anthropic API key</b> in the sidebar to enable scouting reports.</div>',
@@ -1296,9 +1339,9 @@ with tab4:
     if report_type == "Matchup Report":
         r1, r2 = st.columns(2)
         with r1:
-            off_r = st.selectbox("Offensive Player", graph.all_player_names("offense"), key="lr_off")
+            off_r = st.selectbox("Offensive Player", graph.all_player_names("offense") if not _playoff_no_matchups else [], key="lr_off")
         with r2:
-            def_r = st.selectbox("Defensive Player", graph.all_player_names("defense"), key="lr_def")
+            def_r = st.selectbox("Defensive Player", graph.all_player_names("defense") if not _playoff_no_matchups else [], key="lr_def")
 
         if st.button("Generate Matchup Report", type="primary", disabled=not st.session_state.api_key):
             edge = graph.get_matchup(off_r, def_r)
@@ -1352,7 +1395,7 @@ with tab4:
                 st.warning("No direct matchup found for that pair with sufficient possessions.")
 
     elif report_type == "Player Profile Report":
-        pp_r_player = st.selectbox("Player", graph.all_player_names(), key="lr_player")
+        pp_r_player = st.selectbox("Player", graph.all_player_names() if not _playoff_no_matchups else [], key="lr_player")
         pp_r_role = st.radio("Role", ["offense", "defense"], horizontal=True, key="lr_role")
 
         if st.button("Generate Player Report", type="primary", disabled=not st.session_state.api_key):
@@ -1392,7 +1435,7 @@ with tab4:
                 st.warning("Player not found.")
 
     elif report_type == "Defensive Similarity Report":
-        ds_r_def = st.selectbox("Defender", graph.all_player_names("defense"), key="lr_def2")
+        ds_r_def = st.selectbox("Defender", graph.all_player_names("defense") if not _playoff_no_matchups else [], key="lr_def2")
 
         if st.button("Generate Similarity Report", type="primary", disabled=not st.session_state.api_key):
             pid = graph.find_player_id(ds_r_def)
@@ -1493,40 +1536,41 @@ with tab4:
 with tab5:
     st.markdown('<div class="section-header">Graph Overview</div>', unsafe_allow_html=True)
 
-    summ = graph.get_summary()
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Total Players", summ["total_nodes"])
-    m2.metric("Offensive", summ["offensive_players"])
-    m3.metric("Defensive", summ["defensive_players"])
-    m4.metric("Matchup Edges", summ["total_edges"])
-    m5.metric("Graph Density", f"{summ['density']:.4f}")
-    m6.metric("Avg PPP", f"{summ['avg_ppp']:.3f}")
+    if _playoff_no_matchups:
+        st.markdown(_PLAYOFF_MATCHUP_WARNING, unsafe_allow_html=True)
+    else:
+        summ = graph.get_summary()
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Total Players", summ["total_nodes"])
+        m2.metric("Offensive", summ["offensive_players"])
+        m3.metric("Defensive", summ["defensive_players"])
+        m4.metric("Matchup Edges", summ["total_edges"])
+        m5.metric("Graph Density", f"{summ['density']:.4f}")
+        m6.metric("Avg PPP", f"{summ['avg_ppp']:.3f}")
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # Degree distribution
-    off_degs, def_degs = graph.degree_sequences()
-    st.plotly_chart(plot_degree_distribution(off_degs, def_degs), use_container_width=True)
+        off_degs, def_degs = graph.degree_sequences()
+        st.plotly_chart(plot_degree_distribution(off_degs, def_degs), use_container_width=True)
 
-    # PPP Heatmap
-    st.markdown('<div class="section-header">PPP Heatmap</div>', unsafe_allow_html=True)
-    st.markdown("Points per possession for the most active offensive vs. defensive players.")
-    hmap_n = st.slider("Players per axis", 5, 20, 12, key="hmap_n")
-    st.plotly_chart(plot_ppp_heatmap(graph, top_n=hmap_n), use_container_width=True)
+        st.markdown('<div class="section-header">PPP Heatmap</div>', unsafe_allow_html=True)
+        st.markdown("Points per possession for the most active offensive vs. defensive players.")
+        hmap_n = st.slider("Players per axis", 5, 20, 12, key="hmap_n")
+        st.plotly_chart(plot_ppp_heatmap(graph, top_n=hmap_n), use_container_width=True)
 
-    st.markdown("---")
-    st.markdown('<div class="section-header">Most Connected Players</div>', unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown('<div class="section-header">Most Connected Players</div>', unsafe_allow_html=True)
 
-    t1, t2 = st.columns(2)
-    with t1:
-        st.markdown("**Top Offensive Players (most defenders faced)**")
-        top_off = graph.top_connected("offense", top_n=15)
-        st.dataframe(pd.DataFrame(top_off), hide_index=True, use_container_width=True)
+        t1, t2 = st.columns(2)
+        with t1:
+            st.markdown("**Top Offensive Players (most defenders faced)**")
+            top_off = graph.top_connected("offense", top_n=15)
+            st.dataframe(pd.DataFrame(top_off), hide_index=True, use_container_width=True)
 
-    with t2:
-        st.markdown("**Top Defensive Players (most scorers guarded)**")
-        top_def = graph.top_connected("defense", top_n=15)
-        st.dataframe(pd.DataFrame(top_def), hide_index=True, use_container_width=True)
+        with t2:
+            st.markdown("**Top Defensive Players (most scorers guarded)**")
+            top_def = graph.top_connected("defense", top_n=15)
+            st.dataframe(pd.DataFrame(top_def), hide_index=True, use_container_width=True)
 
 
 # ===========================================================================
