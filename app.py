@@ -1510,6 +1510,15 @@ with tab4:
                     f"you must also state what the current season number is."
                     f"{_career_context}"
                 )
+                if _detected:
+                    st.caption(f"Players detected: {', '.join(_detected.values())} — career data injected")
+                else:
+                    st.caption("No NBA player names detected — no career data injected")
+
+                if _career_context:
+                    with st.expander("Show injected career data (debug)", expanded=False):
+                        st.code(_career_context, language=None)
+
                 with st.spinner("The analyst is thinking…"):
                     _analyst_report = _call_anthropic(
                         prompt,
