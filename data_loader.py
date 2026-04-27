@@ -763,6 +763,9 @@ def _aggregate_career_splits_v2(raw_df: pd.DataFrame) -> List[Dict]:
         tov_pct  = tov / tov_d          if tov_d > 0                       else None
         ft_rate  = fta / fga             if fga > 2                        else None
         fg3_pct  = fg3p                  if fg3a and fg3a >= 1.5           else None
+        # PerMode=PerGame — FTA and FG3A are already per-game averages
+        fta_pg   = fta   if fta  > 0 else None
+        fg3a_pg  = fg3a  if fg3a > 0 else None
 
         rows.append({
             "season_id": str(season_id),
@@ -772,6 +775,8 @@ def _aggregate_career_splits_v2(raw_df: pd.DataFrame) -> List[Dict]:
             "rpg":       reb,
             "apg":       ast,
             "ast_pg":    ast,
+            "fta_pg":    fta_pg,
+            "fg3a_pg":   fg3a_pg,
             "fg3_pct":   fg3_pct,
             "ts_pct":    ts_pct,
             "efg_pct":   efg_pct,

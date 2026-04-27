@@ -155,25 +155,37 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
         def _f1(v) -> str:
             return f"{float(v):.1f}" if _ok(v) else "—"
 
+        curr = career_df.iloc[0]
+        curr_sid = str(curr.get("season_id", "current season"))
+
+        # Prominent current-season callout at the top
         lines = [
-            f"{player_name} career trajectory (most recent first, weighted toward recent):",
-            f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'eFG%':>6} {'APG':>5}  weight",
+            f"{player_name} career trajectory (most recent first):",
+            f"*** CURRENT SEASON ({curr_sid}): "
+            f"PPG {_f1(curr.get('ppg'))} | "
+            f"3P% {_pct(curr.get('fg3_pct'))} | "
+            f"TS% {_pct(curr.get('ts_pct'))} | "
+            f"APG {_f1(curr.get('apg') if _ok(curr.get('apg')) else curr.get('ast_pg'))} | "
+            f"FTA/g {_f1(curr.get('fta_pg'))} | "
+            f"3PA/g {_f1(curr.get('fg3a_pg'))} ***",
+            f"(Use this season as the primary reference. Only cite older seasons to show a trend.)",
+            "",
+            f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'FTA/g':>6} {'3PA/g':>6} {'APG':>5}",
         ]
 
         for _, row in career_df.iterrows():
             sid = str(row.get("season_id", ""))
             gp_raw = row.get("gp")
-            gp  = int(float(gp_raw)) if _ok(gp_raw) else 0
-            ppg = _f1(row.get("ppg"))
-            f3  = _pct(row.get("fg3_pct"))
-            ts  = _pct(row.get("ts_pct"))
-            efg = _pct(row.get("efg_pct"))
+            gp   = int(float(gp_raw)) if _ok(gp_raw) else 0
+            ppg  = _f1(row.get("ppg"))
+            f3   = _pct(row.get("fg3_pct"))
+            ts   = _pct(row.get("ts_pct"))
+            fta  = _f1(row.get("fta_pg"))
+            f3a  = _f1(row.get("fg3a_pg"))
             apg_raw = row.get("apg") if _ok(row.get("apg")) else row.get("ast_pg")
-            apg = _f1(apg_raw)
-            w_raw = row.get("weight", 0)
-            w   = float(w_raw) if _ok(w_raw) else 0.0
+            apg  = _f1(apg_raw)
             lines.append(
-                f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {efg:>6} {apg:>5}  {w:.2f}"
+                f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {fta:>6} {f3a:>6} {apg:>5}"
             )
 
         def _wbase(col):
@@ -190,18 +202,17 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
             result = num / denom if denom else None
             return result if _ok(result) else None
 
-        b_ppg = _wbase("ppg")
-        b_f3  = _wbase("fg3_pct")
-        b_ts  = _wbase("ts_pct")
-        b_efg = _wbase("efg_pct")
-        b_apg = _wbase("ast_pg")
+        b_ppg  = _wbase("ppg")
+        b_f3   = _wbase("fg3_pct")
+        b_ts   = _wbase("ts_pct")
+        b_apg  = _wbase("ast_pg")
+        b_fta  = _wbase("fta_pg")
+        b_f3a  = _wbase("fg3a_pg")
 
         lines.append(
-            f"Weighted baseline: PPG {_f1(b_ppg)} | 3P% {_pct(b_f3)} | "
-            f"TS% {_pct(b_ts)} | eFG% {_pct(b_efg)} | APG {_f1(b_apg)}"
+            f"Weighted career baseline: PPG {_f1(b_ppg)} | 3P% {_pct(b_f3)} | "
+            f"TS% {_pct(b_ts)} | FTA/g {_f1(b_fta)} | 3PA/g {_f1(b_f3a)} | APG {_f1(b_apg)}"
         )
-
-        curr = career_df.iloc[0]
 
         def _delta_pct(cur, base) -> str:
             if not _ok(cur) or not _ok(base):
@@ -216,11 +227,12 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
             return f"{d:+.1f}" if _ok(d) else "—"
 
         lines.append(
-            f"Current season vs weighted baseline: "
+            f"Current vs baseline: "
             f"PPG {_delta_f(curr.get('ppg'), b_ppg)} | "
             f"3P% {_delta_pct(curr.get('fg3_pct'), b_f3)} | "
             f"TS% {_delta_pct(curr.get('ts_pct'), b_ts)} | "
-            f"eFG% {_delta_pct(curr.get('efg_pct'), b_efg)} | "
+            f"FTA/g {_delta_f(curr.get('fta_pg'), b_fta)} | "
+            f"3PA/g {_delta_f(curr.get('fg3a_pg'), b_f3a)} | "
             f"APG {_delta_f(curr.get('ast_pg'), b_apg)}"
         )
 
