@@ -1496,8 +1496,8 @@ with tab4:
                     if _career_parts:
                         _career_context = (
                             "\n\n=== VERIFIED CAREER DATA (NBA Stats API) ===\n"
-                            "IMPORTANT: Use ONLY the numbers below when citing statistics. "
-                            "Do not use training-data estimates — they are frequently wrong on per-game figures.\n\n"
+                            "Cite numbers from this section with full confidence. "
+                            "If a stat you want is not here, state the claim qualitatively — no estimates.\n\n"
                             + "\n\n".join(_career_parts)
                         )
 
