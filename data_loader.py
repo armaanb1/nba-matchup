@@ -814,15 +814,36 @@ def get_player_career_splits(
             pass
 
     raw_cache = CACHE_DIR / f"career_splits_{player_id}.json"
-    url = (
-        "https://stats.nba.com/stats/playercareerstats"
-        f"?PlayerID={player_id}&PerMode=PerGame"
-    )
-    data = _fetch_nba_direct(url, raw_cache, force_refresh=force_refresh, timeout=30)
-    if not data:
-        return pd.DataFrame(), {}
 
-    raw_df = _parse_nba_result_set(data, idx=0)
+    # Try nba_api endpoint first — handles NBA.com headers/rate-limits reliably
+    raw_df = pd.DataFrame()
+    try:
+        career_ep = playercareerstats.PlayerCareerStats(
+            player_id=player_id, per_mode_simple="PerGame", timeout=45
+        )
+        time.sleep(NBA_API_DELAY)
+        raw_df = career_ep.get_data_frames()[0]
+        # Persist raw response so future calls use file cache
+        if not raw_df.empty and raw_cache:
+            try:
+                raw_cache.write_text(
+                    career_ep.get_json(), encoding="utf-8"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fall back to direct URL fetch if nba_api failed
+    if raw_df.empty:
+        url = (
+            "https://stats.nba.com/stats/playercareerstats"
+            f"?PlayerID={player_id}&PerMode=PerGame"
+        )
+        data = _fetch_nba_direct(url, raw_cache, force_refresh=force_refresh, timeout=45)
+        if not data:
+            return pd.DataFrame(), {}
+        raw_df = _parse_nba_result_set(data, idx=0)
     if raw_df.empty:
         return pd.DataFrame(), {}
 

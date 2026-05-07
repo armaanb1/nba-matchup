@@ -1508,7 +1508,8 @@ with tab4:
                                 ))
                             try:
                                 _cdf, _ = get_player_career_splits(_pid)
-                            except Exception:
+                            except Exception as _ce:
+                                st.caption(f"Career data fetch failed for {_pname}: {_ce}")
                                 _cdf = None
                             if _cdf is not None and not _cdf.empty:
                                 _career_parts.append(fmt_career_context(_cdf, _pname))
