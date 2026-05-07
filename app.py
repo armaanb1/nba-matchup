@@ -8,6 +8,7 @@ Four interaction modes:
   3. Defensive Similarity  — find defenders with the most similar matchup profiles
   4. LLM Scouting Report  — Anthropic-powered narrative scouting reports
 """
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -1506,13 +1507,19 @@ with tab4:
                                 _career_parts.append(fmt_current_season_context(
                                     player_obj, _zones, _off_hood, _def_hood
                                 ))
-                            try:
-                                _cdf, _ = get_player_career_splits(_pid)
-                            except Exception as _ce:
-                                st.caption(f"Career data fetch failed for {_pname}: {_ce}")
-                                _cdf = None
+                            _cdf = None
+                            for _attempt in range(3):
+                                try:
+                                    _cdf, _ = get_player_career_splits(_pid)
+                                    if _cdf is not None and not _cdf.empty:
+                                        break
+                                except Exception as _ce:
+                                    st.caption(f"Career fetch attempt {_attempt+1} failed for {_pname}: {_ce}")
+                                time.sleep(2)
                             if _cdf is not None and not _cdf.empty:
                                 _career_parts.append(fmt_career_context(_cdf, _pname))
+                            else:
+                                st.caption(f"Career data unavailable for {_pname} after 3 attempts — API may be rate limiting")
                     if _career_parts:
                         _career_context = (
                             "\n\n=== VERIFIED PLAYER DATA (NBA Stats API) ===\n"
