@@ -811,11 +811,11 @@ def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[st
         )
         return message.content[0].text
     except anthropic.AuthenticationError:
-        return "❌ Invalid Anthropic API key. Please check your key in the sidebar."
+        return "ERROR:Invalid Anthropic API key. Please check your key in the sidebar."
     except anthropic.RateLimitError:
-        return "❌ Anthropic rate limit hit. Please wait a moment and try again."
+        return "ERROR:Anthropic rate limit hit. Please wait a moment and try again."
     except Exception as e:
-        return f"❌ Report generation failed: {e}"
+        return f"ERROR:Report generation failed: {e}"
 
 
 def stream_report(user_prompt: str, api_key: str):
@@ -841,8 +841,8 @@ def stream_report(user_prompt: str, api_key: str):
             for text in stream.text_stream:
                 yield text
     except anthropic.AuthenticationError:
-        yield "❌ Invalid Anthropic API key. Please check your key in the sidebar."
+        yield "ERROR:Invalid Anthropic API key. Please check your key in the sidebar."
     except anthropic.RateLimitError:
-        yield "❌ Anthropic rate limit hit. Please wait a moment and try again."
+        yield "ERROR:Anthropic rate limit hit. Please wait a moment and try again."
     except Exception as e:
-        yield f"❌ Report generation failed: {e}"
+        yield f"ERROR:Report generation failed: {e}"
