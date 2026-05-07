@@ -1353,17 +1353,17 @@ with tab4:
             def_p = graph.players.get(def_pid)
 
             if edge and off_p and def_p:
-                # Fetch supporting data — use fast (cache-only) path for career splits
-                _off_zones = get_player_shot_zones(
-                    off_pid, st.session_state.get("season", "2025-26"),
-                    st.session_state.get("season_type", "Regular Season"),
-                ) if off_pid else {}
-                _def_zones = get_player_shot_zones(
-                    def_pid, st.session_state.get("season", "2025-26"),
-                    st.session_state.get("season_type", "Regular Season"),
-                ) if def_pid else {}
-                _off_career_df, _ = _get_career_df_fast(off_pid)
-                _def_career_df, _ = _get_career_df_fast(def_pid)
+                with st.spinner(f"Fetching stats for {off_r} and {def_r}…"):
+                    _off_zones = get_player_shot_zones(
+                        off_pid, st.session_state.get("season", "2025-26"),
+                        st.session_state.get("season_type", "Regular Season"),
+                    ) if off_pid else {}
+                    _def_zones = get_player_shot_zones(
+                        def_pid, st.session_state.get("season", "2025-26"),
+                        st.session_state.get("season_type", "Regular Season"),
+                    ) if def_pid else {}
+                    _off_career_df, _ = _get_career_df_fast(off_pid)
+                    _def_career_df, _ = _get_career_df_fast(def_pid)
 
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {off_r} vs {def_r}")
@@ -1404,14 +1404,15 @@ with tab4:
             pid = graph.find_player_id(pp_r_player)
             player = graph.players.get(pid)
             if player:
-                hood = (graph.get_offensive_neighborhood(pp_r_player, top_n=10)
-                        if pp_r_role == "offense"
-                        else graph.get_defensive_neighborhood(pp_r_player, top_n=10))
-                _pp_zones = get_player_shot_zones(
-                    pid, st.session_state.get("season", "2025-26"),
-                    st.session_state.get("season_type", "Regular Season"),
-                ) if pid else {}
-                _pp_career_df, _ = _get_career_df_fast(pid)
+                with st.spinner(f"Fetching stats for {pp_r_player}…"):
+                    hood = (graph.get_offensive_neighborhood(pp_r_player, top_n=10)
+                            if pp_r_role == "offense"
+                            else graph.get_defensive_neighborhood(pp_r_player, top_n=10))
+                    _pp_zones = get_player_shot_zones(
+                        pid, st.session_state.get("season", "2025-26"),
+                        st.session_state.get("season_type", "Regular Season"),
+                    ) if pid else {}
+                    _pp_career_df, _ = _get_career_df_fast(pid)
 
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {pp_r_player} ({pp_r_role.title()})")
@@ -1489,25 +1490,25 @@ with tab4:
 
                 _career_context = ""
                 if _detected:
-                    _career_parts = []
-                    for _pid, _pname in list(_detected.items())[:3]:
-                        player_obj = graph.players.get(_pid) if graph else None
-                        # Current-season enriched stats + neighborhood matchup data
-                        if player_obj:
-                            _zones = get_player_shot_zones(
-                                _pid,
-                                st.session_state.get("season", "2025-26"),
-                                st.session_state.get("season_type", "Regular Season"),
-                            )
-                            _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
-                            _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
-                            _career_parts.append(fmt_current_season_context(
-                                player_obj, _zones, _off_hood, _def_hood
-                            ))
-                        # Career splits (multi-season trajectory)
-                        _cdf, _ = _get_career_df_fast(_pid)
-                        if _cdf is not None and not _cdf.empty:
-                            _career_parts.append(fmt_career_context(_cdf, _pname))
+                    _names_str = ", ".join(_detected.values())
+                    with st.spinner(f"Fetching stats for {_names_str}…"):
+                        _career_parts = []
+                        for _pid, _pname in list(_detected.items())[:3]:
+                            player_obj = graph.players.get(_pid) if graph else None
+                            if player_obj:
+                                _zones = get_player_shot_zones(
+                                    _pid,
+                                    st.session_state.get("season", "2025-26"),
+                                    st.session_state.get("season_type", "Regular Season"),
+                                )
+                                _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
+                                _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
+                                _career_parts.append(fmt_current_season_context(
+                                    player_obj, _zones, _off_hood, _def_hood
+                                ))
+                            _cdf, _ = _get_career_df_fast(_pid)
+                            if _cdf is not None and not _cdf.empty:
+                                _career_parts.append(fmt_career_context(_cdf, _pname))
                     if _career_parts:
                         _career_context = (
                             "\n\n=== VERIFIED PLAYER DATA (NBA Stats API) ===\n"

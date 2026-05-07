@@ -76,7 +76,7 @@ def _fetch_nba_direct(
     url: str,
     cache_path: Path,
     force_refresh: bool = False,
-    timeout: int = 60,
+    timeout: int = 15,
 ) -> Optional[Dict]:
     """
     Fetch a raw NBA.com stats API URL, with file-based caching.
@@ -108,8 +108,7 @@ def _fetch_nba_direct(
         except Exception as e:
             print(f"  Direct fetch attempt {attempt + 1} failed ({url}): {e}")
             if attempt == 0:
-                time.sleep(3)
-                # Re-create session on retry in case of connection issue
+                time.sleep(1)
                 _nba_session = None
 
     # Return stale cached data as fallback (even if force_refresh was True)
@@ -551,7 +550,7 @@ def _fetch_team_stats_direct(season: str, force_refresh: bool) -> pd.DataFrame:
             resp = session.get(
                 "https://stats.nba.com/stats/leaguedashteamstats",
                 params=params,
-                timeout=60,
+                timeout=15,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -636,7 +635,7 @@ def _fetch_standings_direct(season: str, force_refresh: bool) -> pd.DataFrame:
             resp = session.get(
                 "https://stats.nba.com/stats/leaguestandingsv3",
                 params=params,
-                timeout=60,
+                timeout=15,
             )
             resp.raise_for_status()
             data = resp.json()
