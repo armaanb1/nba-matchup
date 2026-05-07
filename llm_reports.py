@@ -77,18 +77,29 @@ def _fmt_neighborhood_summary(rows: List[Dict], role: str, top_n: int = 5) -> st
         return "No neighborhood data available."
     ppp_key = "ppp" if role == "offense" else "ppp_allowed"
     opp_key = "defender" if role == "offense" else "scorer"
+    team_key = "defender_team" if role == "offense" else "scorer_team"
     label = "best offensive matchups (highest PPP scored)" if role == "offense" \
         else "best defensive matchups (lowest PPP allowed)"
 
-    best = sorted(rows, key=lambda x: x[ppp_key], reverse=(role == "offense"))[:top_n]
-    worst = sorted(rows, key=lambda x: x[ppp_key], reverse=(role != "offense"))[:top_n]
+    # Filter out 0.000 PPP entries — these are data gaps, not real shutdowns
+    valid = [r for r in rows if r[ppp_key] > 0]
+    if not valid:
+        return f"No valid {label} data available."
+
+    best = sorted(valid, key=lambda x: x[ppp_key], reverse=(role == "offense"))[:top_n]
+    worst = sorted(valid, key=lambda x: x[ppp_key], reverse=(role != "offense"))[:top_n]
+
+    def _fmt_row(r):
+        team = r.get(team_key) or ""
+        team_str = f" ({team})" if team else ""
+        return f"  • vs {r[opp_key]}{team_str}: PPP {r[ppp_key]:.3f}  ({r['possessions']:.0f} poss)"
 
     lines = [f"Top {top_n} {label}:"]
     for r in best:
-        lines.append(f"  • vs {r[opp_key]}: PPP {r[ppp_key]:.3f}  ({r['possessions']:.0f} poss)")
+        lines.append(_fmt_row(r))
     lines.append(f"\nBottom {top_n} (toughest matchups):")
     for r in worst:
-        lines.append(f"  • vs {r[opp_key]}: PPP {r[ppp_key]:.3f}  ({r['possessions']:.0f} poss)")
+        lines.append(_fmt_row(r))
     return "\n".join(lines)
 
 
@@ -771,9 +782,14 @@ ANALYST_SYSTEM_PROMPT = (
     "STEP 3 — Never be vague ('mid-30s range', 'roughly X', 'around Y') when the exact figure is in the data. "
     "Vague numbers are worse than no numbers. "
     "The data section is the only permitted source of specific statistics. "
-    "7. Write in complete paragraphs. No bullet points. No numbered lists. "
+    "7. Player and team facts must come from the injected data, not training knowledge. "
+    "Rosters change constantly. If the data says a player is on a team, use that. "
+    "Never assign a player to a team based on what you remember from training — "
+    "those rosters may be a year or more out of date. "
+    "If no team is provided for a player, do not guess their team. "
+    "8. Write in complete paragraphs. No bullet points. No numbered lists. "
     "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
-    "8. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
+    "9. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
 )
 
 

@@ -818,7 +818,7 @@ def get_player_career_splits(
         "https://stats.nba.com/stats/playercareerstats"
         f"?PlayerID={player_id}&PerMode=PerGame"
     )
-    data = _fetch_nba_direct(url, raw_cache, force_refresh=force_refresh)
+    data = _fetch_nba_direct(url, raw_cache, force_refresh=force_refresh, timeout=30)
     if not data:
         return pd.DataFrame(), {}
 
