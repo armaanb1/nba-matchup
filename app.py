@@ -18,6 +18,7 @@ from data_loader import (
     enrich_graph,
     find_nba_player,
     get_player_bio,
+    get_player_career_splits,
     get_player_shot_chart,
     get_player_shot_zones,
     get_playoff_series,
@@ -67,7 +68,6 @@ from counterpoint import (
     generate_example_questions,
     get_cross_team_matchups,
 )
-from data_loader import get_player_career_splits
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -1506,7 +1506,10 @@ with tab4:
                                 _career_parts.append(fmt_current_season_context(
                                     player_obj, _zones, _off_hood, _def_hood
                                 ))
-                            _cdf, _ = _get_career_df_fast(_pid)
+                            try:
+                                _cdf, _ = get_player_career_splits(_pid)
+                            except Exception:
+                                _cdf = None
                             if _cdf is not None and not _cdf.empty:
                                 _career_parts.append(fmt_career_context(_cdf, _pname))
                     if _career_parts:
