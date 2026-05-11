@@ -35,6 +35,8 @@ def _fmt_player_bio(player: Player) -> str:
             stats_parts.append(f"{label}: {val:.1f}")
     if player.fg_pct is not None:
         stats_parts.append(f"FG%: {player.fg_pct:.1%}")
+    if player.ft_pct is not None:
+        stats_parts.append(f"FT%: {player.ft_pct:.1%}")
     if player.ts_pct is not None:
         stats_parts.append(f"TS%: {player.ts_pct:.1%}")
     if stats_parts:
@@ -197,10 +199,11 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
             f"TS% {_pct(curr.get('ts_pct'))} | "
             f"APG {_f1(curr.get('apg') if _ok(curr.get('apg')) else curr.get('ast_pg'))} | "
             f"FTA/g {_f1(curr.get('fta_pg'))} | "
+            f"FT% {_pct(curr.get('ft_pct'))} | "
             f"3PA/g {_f1(curr.get('fg3a_pg'))} ***",
             f"(Use this season as the primary reference. Only cite older seasons to show a trend.)",
             "",
-            f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'FTA/g':>6} {'3PA/g':>6} {'APG':>5}",
+            f"{'Season':<9} {'GP':>4} {'PPG':>6} {'3P%':>5} {'TS%':>5} {'FT%':>5} {'FTA/g':>6} {'3PA/g':>6} {'APG':>5}",
         ]
 
         for _, row in career_df.iterrows():
@@ -210,12 +213,13 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
             ppg  = _f1(row.get("ppg"))
             f3   = _pct(row.get("fg3_pct"))
             ts   = _pct(row.get("ts_pct"))
+            ft   = _pct(row.get("ft_pct"))
             fta  = _f1(row.get("fta_pg"))
             f3a  = _f1(row.get("fg3a_pg"))
             apg_raw = row.get("apg") if _ok(row.get("apg")) else row.get("ast_pg")
             apg  = _f1(apg_raw)
             lines.append(
-                f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {fta:>6} {f3a:>6} {apg:>5}"
+                f"{sid:<9} {gp:>4} {ppg:>6} {f3:>5} {ts:>5} {ft:>5} {fta:>6} {f3a:>6} {apg:>5}"
             )
 
         def _wbase(col):
@@ -235,13 +239,14 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
         b_ppg  = _wbase("ppg")
         b_f3   = _wbase("fg3_pct")
         b_ts   = _wbase("ts_pct")
+        b_ft   = _wbase("ft_pct")
         b_apg  = _wbase("ast_pg")
         b_fta  = _wbase("fta_pg")
         b_f3a  = _wbase("fg3a_pg")
 
         lines.append(
             f"Weighted career baseline: PPG {_f1(b_ppg)} | 3P% {_pct(b_f3)} | "
-            f"TS% {_pct(b_ts)} | FTA/g {_f1(b_fta)} | 3PA/g {_f1(b_f3a)} | APG {_f1(b_apg)}"
+            f"TS% {_pct(b_ts)} | FT% {_pct(b_ft)} | FTA/g {_f1(b_fta)} | 3PA/g {_f1(b_f3a)} | APG {_f1(b_apg)}"
         )
 
         def _delta_pct(cur, base) -> str:
@@ -261,6 +266,7 @@ def _fmt_career_trajectory(career_df: pd.DataFrame, player_name: str) -> str:
             f"PPG {_delta_f(curr.get('ppg'), b_ppg)} | "
             f"3P% {_delta_pct(curr.get('fg3_pct'), b_f3)} | "
             f"TS% {_delta_pct(curr.get('ts_pct'), b_ts)} | "
+            f"FT% {_delta_pct(curr.get('ft_pct'), b_ft)} | "
             f"FTA/g {_delta_f(curr.get('fta_pg'), b_fta)} | "
             f"3PA/g {_delta_f(curr.get('fg3a_pg'), b_f3a)} | "
             f"APG {_delta_f(curr.get('ast_pg'), b_apg)}"
@@ -787,6 +793,8 @@ ANALYST_SYSTEM_PROMPT = (
     "Never assign a player to a team based on what you remember from training — "
     "those rosters may be a year or more out of date. "
     "If no team is provided for a player, do not guess their team. "
+    "Head coaches are provided in the team data when available — use those names. "
+    "If no head coach is listed for a team, do not name one from memory. "
     "8. Write in complete paragraphs. No bullet points. No numbered lists. "
     "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
     "9. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."

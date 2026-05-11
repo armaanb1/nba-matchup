@@ -22,13 +22,33 @@ from data_loader import (
     get_player_career_splits,
     get_player_shot_chart,
     get_player_shot_zones,
-    get_playoff_series,
+    get_team_head_coach,
     get_team_roster,
-    get_team_standings_live,
-    get_team_stats_live,
     load_matchup_data,
 )
+from bbref_loader import (
+    get_bbref_team_stats,
+    get_bbref_playoff_bracket,
+)
 from nba_api.stats.static import players as _nba_players_static
+from nba_api.stats.static import teams as _nba_teams_static
+try:
+    from bbref_loader import (
+        get_current_season_logs,
+        get_playoff_logs,
+        fmt_game_log_context,
+    )
+    _BBREF_AVAILABLE = True
+except ImportError:
+    _BBREF_AVAILABLE = False
+
+from analyst_context import (
+    detect_teams,
+    detect_concepts,
+    get_team_players,
+    resolve_concept_players,
+    fmt_player_compact,
+)
 from llm_reports import (
     ANALYST_SYSTEM_PROMPT,
     fmt_career_context,
@@ -1474,59 +1494,151 @@ with tab4:
 
         if st.button("Ask", type="primary", disabled=not st.session_state.api_key):
             if analyst_question.strip():
-                # Detect NBA player names in the question and inject career data
                 _q_text = analyst_question.strip()
+                _season = st.session_state.get("season", "2025-26")
+                _season_end = int(_season.split("-")[0]) + 1
+
+                # --- Layer 1: named player detection ---
                 _all_nba = {p["full_name"].lower(): p for p in _nba_players_static.get_players()}
-                # Strip possessives but keep hyphens (e.g. Gilgeous-Alexander)
-                _q_clean = _q_text.replace("'s", "").replace("’s", "")
+                _q_clean = _q_text.replace("'s", "").replace("'s", "")
                 _words = _q_clean.split()
-                _detected = {}
+                _named_players = {}  # pid → name (explicitly mentioned)
                 for _n in [3, 2]:
                     for _i in range(len(_words) - _n + 1):
                         _candidate = " ".join(_words[_i:_i+_n])
-                        # Keep letters, spaces, hyphens and apostrophes — preserve compound names
                         _clean = "".join(c for c in _candidate if c.isalpha() or c in " '-").strip()
-                        if _clean.lower() in _all_nba and _all_nba[_clean.lower()]["id"] not in _detected:
-                            _detected[_all_nba[_clean.lower()]["id"]] = _clean
+                        if _clean.lower() in _all_nba and _all_nba[_clean.lower()]["id"] not in _named_players:
+                            _named_players[_all_nba[_clean.lower()]["id"]] = _clean
+
+                # --- Layer 2: team detection ---
+                _detected_teams = detect_teams(_q_text) if graph else []
+
+                # --- Layer 3: concept detection ---
+                _detected_concepts = detect_concepts(_q_text)
+
+                _career_parts = []
+                _fetch_labels = []
+                if _named_players:
+                    _fetch_labels.append(", ".join(_named_players.values()))
+                if _detected_teams:
+                    _fetch_labels.append("teams: " + ", ".join(_detected_teams))
+                if _detected_concepts:
+                    _fetch_labels.append("concepts: " + ", ".join(_detected_concepts))
+
+                _spinner_msg = ("Fetching data for " + " | ".join(_fetch_labels) + "...") if _fetch_labels else "Thinking..."
+
+                with st.spinner(_spinner_msg):
+
+                    # Named players -- full data + game logs
+                    for _pid, _pname in list(_named_players.items())[:3]:
+                        player_obj = graph.players.get(_pid) if graph else None
+                        if player_obj:
+                            _zones = get_player_shot_zones(_pid, _season, st.session_state.get("season_type", "Regular Season"))
+                            _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
+                            _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
+                            _career_parts.append(fmt_current_season_context(player_obj, _zones, _off_hood, _def_hood))
+                        _cdf = None
+                        for _attempt in range(3):
+                            try:
+                                _cdf, _ = get_player_career_splits(_pid)
+                                if _cdf is not None and not _cdf.empty:
+                                    break
+                            except Exception:
+                                pass
+                            time.sleep(1)
+                        if _cdf is not None and not _cdf.empty:
+                            _career_parts.append(fmt_career_context(_cdf, _pname))
+                        if _BBREF_AVAILABLE:
+                            _reg_logs = get_current_season_logs(_pname, _season_end)
+                            _playoff_logs = get_playoff_logs(_pname, _season_end)
+                            _log_ctx = fmt_game_log_context(_pname, _reg_logs, _playoff_logs)
+                            if _log_ctx:
+                                _career_parts.append(_log_ctx)
+
+                    # Team stats & roster — injected for every detected team
+                    _tdf_analyst = st.session_state.get("team_stats_df")
+                    # Static team ID lookup — always available, no data-load required
+                    _static_tid_map = {t["nickname"]: t["id"] for t in _nba_teams_static.get_teams()}
+                    for _team in _detected_teams:
+                        _team_lines = [f"=== {_team.upper()} — TEAM STATS & ROSTER ==="]
+                        # Resolve team_id: static map first, then session cache
+                        _analyst_tid = (
+                            _static_tid_map.get(_team)
+                            or st.session_state.get("roster_team_ids", {}).get(_team)
+                        )
+                        # Team-level stats (available only after "Load Team Data")
+                        if _tdf_analyst is not None and not _tdf_analyst.empty:
+                            _t_row = _tdf_analyst[
+                                _tdf_analyst["TEAM_NAME"].str.lower().str.contains(
+                                    _team.split()[-1].lower(), na=False
+                                )
+                            ]
+                            if not _t_row.empty:
+                                _tr = _t_row.iloc[0]
+                                def _tf(col):
+                                    v = _tr.get(col)
+                                    try:
+                                        return f"{float(v):.1f}" if v is not None else "—"
+                                    except (TypeError, ValueError):
+                                        return "—"
+                                _team_lines.append(
+                                    f"Team stats: OffRtg {_tf('OFF_RATING')} | DefRtg {_tf('DEF_RATING')} | "
+                                    f"NetRtg {_tf('NET_RATING')} | Pace {_tf('PACE')} | "
+                                    f"W-L {int(_tr.get('W', 0) or 0)}-{int(_tr.get('L', 0) or 0)}"
+                                )
+                        # Head coach — fetched via NBA API (cached per team)
+                        if _analyst_tid:
+                            try:
+                                _head_coach = get_team_head_coach(
+                                    _analyst_tid, season=st.session_state.get("season", "2025-26")
+                                )
+                                if _head_coach:
+                                    _team_lines.append(f"Head coach: {_head_coach}")
+                            except Exception:
+                                pass
+                        # Roster players (available after matchup data is loaded)
+                        _team_players = get_team_players(_team, graph) if graph else []
+                        for _tp in _team_players:
+                            if _tp.player_id not in _named_players:
+                                _tp_cdf = None
+                                try:
+                                    _tp_cdf, _ = get_player_career_splits(_tp.player_id)
+                                except Exception:
+                                    pass
+                                _team_lines.append(fmt_player_compact(_tp, _tp_cdf))
+                        if len(_team_lines) > 1:
+                            _career_parts.append("\n".join(_team_lines))
+
+                    # Concept pools — enriched stats + improvement delta (compact)
+                    _career_cache = {}
+                    if _detected_concepts and graph:
+                        # Pre-load career splits for concept resolution
+                        for _p in graph.players.values():
+                            if _p.player_id not in _career_cache:
+                                try:
+                                    _cdf2, _ = get_player_career_splits(_p.player_id)
+                                    if _cdf2 is not None and not _cdf2.empty:
+                                        _career_cache[_p.player_id] = _cdf2
+                                except Exception:
+                                    pass
+
+                        for _concept in _detected_concepts:
+                            _concept_players = resolve_concept_players(_concept, graph, _career_cache)
+                            if _concept_players:
+                                _concept_lines = [f"=== {_concept.upper().replace('_',' ')} CANDIDATES (ranked by current stats) ==="]
+                                for _cp in _concept_players:
+                                    if _cp.player_id not in _named_players:
+                                        _concept_lines.append(fmt_player_compact(_cp, _career_cache.get(_cp.player_id)))
+                                _career_parts.append("\n".join(_concept_lines))
 
                 _career_context = ""
-                if _detected:
-                    _names_str = ", ".join(_detected.values())
-                    with st.spinner(f"Fetching stats for {_names_str}…"):
-                        _career_parts = []
-                        for _pid, _pname in list(_detected.items())[:3]:
-                            player_obj = graph.players.get(_pid) if graph else None
-                            if player_obj:
-                                _zones = get_player_shot_zones(
-                                    _pid,
-                                    st.session_state.get("season", "2025-26"),
-                                    st.session_state.get("season_type", "Regular Season"),
-                                )
-                                _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
-                                _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
-                                _career_parts.append(fmt_current_season_context(
-                                    player_obj, _zones, _off_hood, _def_hood
-                                ))
-                            _cdf = None
-                            for _attempt in range(3):
-                                try:
-                                    _cdf, _ = get_player_career_splits(_pid)
-                                    if _cdf is not None and not _cdf.empty:
-                                        break
-                                except Exception as _ce:
-                                    st.caption(f"Career fetch attempt {_attempt+1} failed for {_pname}: {_ce}")
-                                time.sleep(2)
-                            if _cdf is not None and not _cdf.empty:
-                                _career_parts.append(fmt_career_context(_cdf, _pname))
-                            else:
-                                st.caption(f"Career data unavailable for {_pname} after 3 attempts — API may be rate limiting")
-                    if _career_parts:
-                        _career_context = (
-                            "\n\n=== VERIFIED PLAYER DATA (NBA Stats API) ===\n"
-                            "Cite numbers from this section with full confidence. "
-                            "If a stat you want is not here, state the claim qualitatively — no estimates.\n\n"
-                            + "\n\n".join(_career_parts)
-                        )
+                if _career_parts:
+                    _career_context = (
+                        "\n\n=== VERIFIED PLAYER DATA (NBA Stats API + Basketball Reference) ===\n"
+                        "Cite numbers from this section with full confidence. "
+                        "If a stat you want is not here, state the claim qualitatively.\n\n"
+                        + "\n\n".join(_career_parts)
+                    )
 
                 _data_preamble = ""
                 if _career_context:
@@ -1548,10 +1660,17 @@ with tab4:
                     f"Answer this at the depth a coaching staff would expect from a senior scout. "
                     f"Be direct, use specific scheme language, and cite real examples where they sharpen the argument."
                 )
-                if _detected:
-                    st.caption(f"Players detected: {', '.join(_detected.values())} — career data injected")
+                _summary_parts = []
+                if _named_players:
+                    _summary_parts.append("Players: " + ", ".join(_named_players.values()))
+                if _detected_teams:
+                    _summary_parts.append("Teams: " + ", ".join(_detected_teams))
+                if _detected_concepts:
+                    _summary_parts.append("Concepts: " + ", ".join(_detected_concepts))
+                if _summary_parts:
+                    st.caption("Data fetched for — " + " | ".join(_summary_parts))
                 else:
-                    st.caption("No NBA player names detected — no career data injected")
+                    st.caption("No players, teams, or concepts detected — answering from general knowledge")
 
                 if _career_context:
                     with st.expander("Show injected career data (debug)", expanded=False):
@@ -2295,55 +2414,41 @@ with tab6:
     def _load_all_team_data(force: bool = False):
         import datetime
         _season = st.session_state.season
-        _errors = []
+        _season_end = int(_season.split("-")[0]) + 1
 
-        tdf = get_team_stats_live(season=_season, force_refresh=force)
-        if tdf.empty:
-            _errors.append("team stats")
+        tdf = get_bbref_team_stats(_season_end)
+        bracket = get_bbref_playoff_bracket(_season_end)
 
-        sdf = get_team_standings_live(season=_season, force_refresh=force)
-        if sdf.empty:
-            _errors.append("standings")
-
-        psdf = get_playoff_series(season=_season, force_refresh=force)
-
-        # Build team_id lookup from standings
-        _tid_map = {}
-        if not sdf.empty:
-            _id_col = next((c for c in ["TeamID", "TEAM_ID"] if c in sdf.columns), None)
-            _nm_col = next((c for c in ["FULL_NAME", "TeamName", "TEAM_NAME"] if c in sdf.columns), None)
-            if _id_col and _nm_col:
-                for _, _r in sdf.iterrows():
-                    _tid_map[str(_r[_nm_col])] = int(_r[_id_col])
+        # BBRef team stats doubles as standings (has Conference, PlayoffRank, W, L)
+        # Add FULL_NAME alias so existing column-detection code still works
+        if not tdf.empty:
+            tdf["FULL_NAME"] = tdf["TEAM_NAME"]
+            tdf["TeamName"] = tdf["TEAM_NAME"]
 
         st.session_state.team_stats_df = tdf if not tdf.empty else None
-        st.session_state.standings_df = sdf if not sdf.empty else None
-        st.session_state.playoff_series_df = psdf if not psdf.empty else None
+        st.session_state.standings_df = tdf if not tdf.empty else None
+        st.session_state.playoff_bracket_list = bracket
+        # Keep playoff_series_df as None — no longer used
+        st.session_state.playoff_series_df = None
         st.session_state.team_data_loaded = True
-        st.session_state.roster_team_ids = _tid_map
         st.session_state.team_data_updated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if force:
-            # Clear roster cache so re-fetch picks up fresh data
             st.session_state.roster_cache = {}
 
-        return _errors
+        return []
 
     if load_team_btn:
-        with st.spinner("Fetching live team stats, standings, and playoff bracket from NBA.com…"):
-            _errs = _load_all_team_data(force=False)
+        with st.spinner("Fetching live team stats and playoff bracket from Basketball Reference..."):
+            _load_all_team_data(force=False)
         if st.session_state.team_stats_df is not None:
             st.success(f"Loaded stats for {len(st.session_state.team_stats_df)} teams.")
-        if _errs:
-            st.warning(f"Some endpoints unavailable: {', '.join(_errs)}. Displaying last known values where possible.")
 
     if refresh_team_btn:
-        with st.spinner("Clearing cache and re-fetching live data…"):
-            _errs = _load_all_team_data(force=True)
+        with st.spinner("Re-fetching from Basketball Reference..."):
+            _load_all_team_data(force=True)
         if st.session_state.team_stats_df is not None:
-            st.success("Data refreshed.")
-        if _errs:
-            st.warning(f"Live data temporarily unavailable for: {', '.join(_errs)}. Displaying last known values.")
+            st.success("Data refreshed from Basketball Reference.")
 
     if not st.session_state.team_data_loaded or st.session_state.team_stats_df is None:
         st.markdown(
@@ -2535,374 +2640,117 @@ with tab6:
             st.markdown("---")
 
             # ===========================================================
-            # Section 2: Playoff Predictor
+            # Section 2: Playoff Bracket (live from Basketball Reference)
             # ===========================================================
-            st.markdown('<div class="section-header">Playoff Predictor</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-header">Playoff Bracket</div>', unsafe_allow_html=True)
 
-            if _sdf is None or _sdf.empty:
+            _bracket = st.session_state.get("playoff_bracket_list", [])
+
+            if not _bracket:
                 st.markdown(
-                    '<div class="info-box">Standings data unavailable. Playoff projections cannot be shown.</div>',
+                    '<div class="info-box">Playoff bracket unavailable. Click Load Team Data to fetch from Basketball Reference.</div>',
                     unsafe_allow_html=True,
                 )
             else:
-                # Determine column names flexibly
-                _conf_col = next((c for c in ["Conference", "ConferenceAbbrev", "TeamConference"] if c in _sdf.columns), None)
-                _name_col = next((c for c in ["TeamName", "Team", "TEAM_NAME"] if c in _sdf.columns), None)
-                _wins_col = next((c for c in ["WINS", "WinPct", "Win"] if c in _sdf.columns), None)
-                _losses_col = next((c for c in ["LOSSES", "Loss"] if c in _sdf.columns), None)
-                _rank_col = next((c for c in ["PlayoffRank", "ConferenceRank", "Rank"] if c in _sdf.columns), None)
+                import math
 
-                # Use FULL_NAME (city + nickname) if available, else fall back to _name_col
-                _full_name_col = "FULL_NAME" if "FULL_NAME" in _sdf.columns else _name_col
+                def _series_prob(p: float) -> float:
+                    """Best-of-7 series win probability given single-game win prob p."""
+                    q = 1 - p
+                    return p**4 * (1 + 4*q + 10*q**2 + 20*q**3)
 
-                # Detect play-in teams from series vector: if no R1 series exist yet,
-                # seeds 7-10 are still competing in play-in games
-                _psdf = st.session_state.get("playoff_series_df")
-                _playin_active = True  # assume play-in pending until series vector says otherwise
-                _confirmed_r1_teams: set = set()  # team full names confirmed in R1
-                if _psdf is not None and not _psdf.empty:
-                    _round_col = next((c for c in ["ROUND", "SeriesRound", "SERIES_ROUND"] if c in _psdf.columns), None)
-                    if _round_col:
-                        _r1 = _psdf[_psdf[_round_col].astype(str) == "1"]
-                        if not _r1.empty:
-                            _playin_active = False
-                            # Collect team names from confirmed R1 series
-                            for _tcol in ["HOME_TEAM_NAME", "VISITOR_TEAM_NAME", "HOME_TEAM_ID", "VISITOR_TEAM_ID"]:
-                                if _tcol in _r1.columns:
-                                    _confirmed_r1_teams.update(_r1[_tcol].dropna().astype(str).tolist())
+                def _net_rating(team_name):
+                    if _tdf is None:
+                        return None
+                    row = _tdf[_tdf["TEAM_NAME"].str.lower() == team_name.lower()]
+                    if row.empty:
+                        # try partial match
+                        row = _tdf[_tdf["TEAM_NAME"].str.lower().str.contains(team_name.split()[-1].lower(), na=False)]
+                    return float(row["NET_RATING"].iloc[0]) if not row.empty else None
 
-                # Clinch / play-in indicator column from leaguestandingsv3
-                _clinch_col = next((c for c in ["ClinchIndicator", "CLINCH_INDICATOR", "ClinchedIndicator"] if c in _sdf.columns), None)
+                # Group by round
+                _rounds_order = ["Finals", "Conference Finals", "Conference Semifinals", "First Round"]
+                _by_round = {}
+                for _s in _bracket:
+                    _by_round.setdefault(_s["round_name"], []).append(_s)
 
-                if _conf_col and _name_col:
-                    # Build seedings — use full sdf so we get clinch indicators
-                    _standings_full = _sdf.copy()
+                _status_icons = {"in_progress": "🔴", "upcoming": "🔜", "completed": "✅"}
 
-                    def _get_conf_seeds(conf_label):
-                        _sub = _standings_full[_standings_full[_conf_col].str.upper().str.startswith(conf_label.upper())]
-                        if _rank_col and _rank_col in _sub.columns:
-                            _sub = _sub.sort_values(_rank_col)
-                        elif _wins_col and _wins_col in _sub.columns:
-                            _sub = _sub.sort_values(_wins_col, ascending=False)
-                        return _sub.head(10).reset_index(drop=True)  # include seeds 9-10 for play-in
+                for _rname in _rounds_order:
+                    _series_in_round = _by_round.get(_rname, [])
+                    if not _series_in_round:
+                        continue
 
-                    _east = _get_conf_seeds("E")
-                    _west = _get_conf_seeds("W")
+                    # Detect if any series in this round is active
+                    _has_active = any(s["status"] in ("in_progress", "upcoming") for s in _series_in_round)
+                    _round_label = f"**{_rname}**" + (" — In Progress" if _has_active else "")
+                    st.markdown(f"#### {_round_label}")
 
-                    # ── Confirmed play-in results (2025 West) ──────────────────────────
-                    # Portland Trail Blazers won the 7 seed; Phoenix Suns won the 8 seed.
-                    # Reorder the bottom of the West bracket so seeds 7-10 reflect the
-                    # actual playoff bracket, not the regular-season standings order.
-                    _playin_active = False   # play-in is complete — remove badges
-                    _west_playin_order = ["Portland Trail Blazers", "Phoenix Suns"]
-                    _west = _west.copy().reset_index(drop=True)
-                    _name_check_col = _full_name_col if _full_name_col in _west.columns else _name_col
-                    if _name_check_col in _west.columns:
-                        def _row_matches(row, team):
-                            val = str(row.get(_name_check_col, "")).lower()
-                            return team.lower() in val or val in team.lower()
-                        _bottom_idx = list(range(6, len(_west)))      # indices 6-9 (seeds 7-10)
-                        _bottom_rows = _west.iloc[_bottom_idx].copy()
-                        _ordered, _used = [], set()
-                        for _t in _west_playin_order:
-                            for _bi in _bottom_rows.index:
-                                if _bi not in _used and _row_matches(_bottom_rows.loc[_bi], _t):
-                                    _ordered.append(_bi)
-                                    _used.add(_bi)
-                                    break
-                        # Append any remaining play-in rows not in the override list
-                        for _bi in _bottom_rows.index:
-                            if _bi not in _used:
-                                _ordered.append(_bi)
-                        if len(_ordered) == len(_bottom_idx):
-                            _west = pd.concat(
-                                [_west.iloc[:6], _bottom_rows.loc[_ordered]]
-                            ).reset_index(drop=True)
+                    _cols = st.columns(min(len(_series_in_round), 2))
+                    for _ci, _s in enumerate(_series_in_round):
+                        with _cols[_ci % 2]:
+                            _icon = _status_icons.get(_s["status"], "")
+                            _score_str = f"{_s['wins1']}-{_s['wins2']}"
 
-                    def _seed_label(sr, seed_num) -> str:
-                        """Build a seed line with play-in badge and win-loss."""
-                        _nm = sr.get(_full_name_col) or sr.get(_name_col, "—")
-                        _sw = sr.get(_wins_col, None)
-                        _sl = sr.get(_losses_col, None)
-                        try:
-                            _wl = f" {int(float(_sw))}-{int(float(_sl))}" if _sw is not None and _sl is not None else ""
-                        except Exception:
-                            _wl = ""
-                        _badge = ""
-                        if seed_num >= 7:
-                            if _playin_active:
-                                _badge = " <span style='font-size:0.75em;color:#F0A500;'>[Play-In]</span>"
-                            elif _clinch_col and sr.get(_clinch_col) in ("pi", "PI"):
-                                _badge = " <span style='font-size:0.75em;color:#F0A500;'>[Play-In]</span>"
-                        return _nm, _wl, _badge
+                            if _s["status"] == "completed":
+                                _header = f"{_icon} **{_s['leader']}** def. {_s['team2'] if _s['leader'] == _s['team1'] else _s['team1']} ({_score_str})"
+                            elif _s["status"] == "in_progress":
+                                _leader_txt = f"{_s['leader']} leads" if _s["leader"] else "Tied"
+                                _header = f"{_icon} **{_s['team1']}** vs **{_s['team2']}** — {_leader_txt} {_score_str}"
+                            else:
+                                _header = f"{_icon} **{_s['team1']}** vs **{_s['team2']}** — Upcoming"
 
-                    # Show seeds
-                    _seed_c1, _seed_c2 = st.columns(2)
-                    with _seed_c1:
-                        st.markdown("**Eastern Conference Seeds**")
-                        for _si, _sr in _east.iterrows():
-                            _seed_num = _si + 1
-                            _snm, _wl, _badge = _seed_label(_sr, _seed_num)
-                            _is_sel = _snm in (team1_sel, team2_sel) or _sr.get(_name_col, "") in (team1_sel, team2_sel)
-                            _style = "color:#F0A500; font-weight:700;" if _is_sel else ""
-                            _sep = "──────────────" if _seed_num == 6 else ""
-                            if _sep:
-                                st.markdown(f"<span style='color:#2A3550; font-size:0.7em;'>{_sep}</span>", unsafe_allow_html=True)
-                            st.markdown(f"<span style='{_style}'>{_seed_num}. {_snm}{_wl}</span>{_badge}", unsafe_allow_html=True)
-                    with _seed_c2:
-                        st.markdown("**Western Conference Seeds**")
-                        for _si, _sr in _west.iterrows():
-                            _seed_num = _si + 1
-                            _snm, _wl, _badge = _seed_label(_sr, _seed_num)
-                            _is_sel = _snm in (team1_sel, team2_sel) or _sr.get(_name_col, "") in (team1_sel, team2_sel)
-                            _style = "color:#F0A500; font-weight:700;" if _is_sel else ""
-                            _sep = "──────────────" if _seed_num == 6 else ""
-                            if _sep:
-                                st.markdown(f"<span style='color:#2A3550; font-size:0.7em;'>{_sep}</span>", unsafe_allow_html=True)
-                            st.markdown(f"<span style='{_style}'>{_seed_num}. {_snm}{_wl}</span>{_badge}", unsafe_allow_html=True)
+                            st.markdown(_header)
 
-                    # -------------------------------------------------------
-                    # Injury adjustments
-                    # -------------------------------------------------------
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown("**Injury Adjustments (optional)**")
-
-                    # Helper: resolve standings nickname → full name in team stats df
-                    def _resolve_team_row(nickname: str) -> pd.DataFrame:
-                        """Find team row in _tdf matching a nickname or full name (case-insensitive)."""
-                        # Exact match first
-                        _exact = _tdf[_tdf[_team_name_col].str.lower() == nickname.lower()]
-                        if not _exact.empty:
-                            return _exact
-                        # Partial: nickname is contained in full name (e.g. "Thunder" in "Oklahoma City Thunder")
-                        _partial = _tdf[_tdf[_team_name_col].str.lower().str.contains(nickname.lower(), regex=False)]
-                        if not _partial.empty:
-                            return _partial
-                        # Reverse: last word of full name matches nickname
-                        _last = _tdf[_tdf[_team_name_col].apply(lambda x: x.split()[-1].lower()) == nickname.lower()]
-                        return _last
-
-                    # Roster-based player lists (live from API, already fetched above)
-                    _t1_players = _roster_player_names(_roster_t1)
-                    _t2_players = _roster_player_names(_roster_t2)
-
-                    _inj_c1, _inj_c2 = st.columns(2)
-                    with _inj_c1:
-                        _t1_injured = st.multiselect(
-                            f"{team1_sel} — Out",
-                            _t1_players,
-                            key="inj_t1",
-                        )
-                    with _inj_c2:
-                        _t2_injured = st.multiselect(
-                            f"{team2_sel} — Out",
-                            _t2_players,
-                            key="inj_t2",
-                        )
-                    if not _t1_players and not _t2_players:
-                        st.caption(
-                            "⚠️ Roster data unavailable — click **Refresh** or try a different season."
-                        )
-                    else:
-                        st.caption(
-                            "Mark players as out. Their estimated impact (PIE × 100) is "
-                            "subtracted from the team's effective Net Rating before computing probabilities."
-                        )
-
-                    def _injury_impact(injured_names) -> float:
-                        """Sum up PIE-based impact for injured players (PIE × 100 ≈ net rating pts)."""
-                        total = 0.0
-                        for nm in injured_names:
-                            _pid = graph.find_player_id(nm)
-                            p = graph.players.get(_pid) if _pid else None
-                            if p and p.pie is not None:
-                                total += float(p.pie) * 100
-                        return total
-
-                    _t1_impact = _injury_impact(_t1_injured)
-                    _t2_impact = _injury_impact(_t2_injured)
-
-                    # -------------------------------------------------------
-                    # Series win probability helper
-                    # -------------------------------------------------------
-                    def _series_prob(p: float) -> float:
-                        """Best-of-7 series win probability given single-game win prob p."""
-                        q = 1 - p
-                        return p**4 * (1 + 4*q + 10*q**2 + 20*q**3)
-
-                    # -------------------------------------------------------
-                    # Win probability: selected teams head-to-head
-                    # -------------------------------------------------------
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown(f"**Series Win Probability: {team1_sel} vs {team2_sel}**")
-
-                    _net1 = _t1.get("NET_RATING")
-                    _net2 = _t2.get("NET_RATING")
-
-                    if _net1 is not None and _net2 is not None:
-                        _net1f = float(_net1) - _t1_impact
-                        _net2f = float(_net2) - _t2_impact
-                        _diff = _net1f - _net2f
-                        _p1g = 1 / (1 + math.exp(-(_diff / 7)))
-                        _p2g = 1 - _p1g
-                        _p1s = _series_prob(_p1g)
-                        _p2s = 1 - _p1s
-
-                        if _t1_injured or _t2_injured:
-                            st.caption(
-                                f"Adjusted Net Ratings — {team1_sel}: {_net1f:+.1f} "
-                                f"(raw {float(_t1.get('NET_RATING')):+.1f}, −{_t1_impact:.1f} inj), "
-                                f"{team2_sel}: {_net2f:+.1f} "
-                                f"(raw {float(_t2.get('NET_RATING')):+.1f}, −{_t2_impact:.1f} inj)"
-                            )
-
-                        _wp_col1, _wp_col2 = st.columns(2)
-                        with _wp_col1:
-                            st.markdown(
-                                f'<div class="stat-card"><h4>{team1_sel}</h4>'
-                                f'<p>Series win prob: <span class="value">{_p1s:.1%}</span></p>'
-                                f'<p>Per-game win prob: <span class="value">{_p1g:.1%}</span></p>'
-                                f'<p>Adj Net Rating: <span class="value">{_net1f:+.1f}</span></p></div>',
-                                unsafe_allow_html=True,
-                            )
-                            st.progress(_p1s)
-                        with _wp_col2:
-                            st.markdown(
-                                f'<div class="stat-card"><h4>{team2_sel}</h4>'
-                                f'<p>Series win prob: <span class="value">{_p2s:.1%}</span></p>'
-                                f'<p>Per-game win prob: <span class="value">{_p2g:.1%}</span></p>'
-                                f'<p>Adj Net Rating: <span class="value">{_net2f:+.1f}</span></p></div>',
-                                unsafe_allow_html=True,
-                            )
-                            st.progress(_p2s)
-
-                        st.caption(
-                            "Series probability = P(win 4 of 7) using per-game win prob derived from "
-                            "Net Rating differential: p = 1/(1+e^(−Δ/7)). Injury adjustment subtracts "
-                            "PIE×100 from the team's Net Rating per injured player."
-                        )
-
-                    # -------------------------------------------------------
-                    # First-round matchup projections — expandable cards
-                    # -------------------------------------------------------
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown('<div class="section-header">Projected First-Round Matchups</div>', unsafe_allow_html=True)
-
-                    def _predicted_series(fav: str, prob: float) -> str:
-                        """Return 'Fav in N' prediction string based on series win probability."""
-                        if prob >= 0.97:
-                            return f"{fav} in 4"
-                        elif prob >= 0.88:
-                            return f"{fav} in 5"
-                        elif prob >= 0.76:
-                            return f"{fav} in 6"
-                        elif prob >= 0.60:
-                            return f"{fav} in 7"
-                        else:
-                            return "Toss-up"
-
-                    def _show_matchups(conf_seeds: pd.DataFrame, conf_label: str):
-                        st.markdown(f"**{conf_label}**")
-                        _pairs = [(1, 8), (2, 7), (3, 6), (4, 5)]
-                        for _high, _low in _pairs:
-                            _hi_idx = _high - 1
-                            _lo_idx = _low - 1
-                            if _hi_idx >= len(conf_seeds) or _lo_idx >= len(conf_seeds):
-                                continue
-                            _hn = conf_seeds.iloc[_hi_idx].get(_name_col, f"#{_high} seed")
-                            _ln = conf_seeds.iloc[_lo_idx].get(_name_col, f"#{_low} seed")
-
-                            # Use fuzzy lookup so standings nicknames match team stats full names
-                            _hn_row = _resolve_team_row(_hn)
-                            _ln_row = _resolve_team_row(_ln)
-
-                            # Get full names for display (fallback to nickname)
-                            _hn_full = _hn_row.iloc[0].get(_team_name_col, _hn) if not _hn_row.empty else _hn
-                            _ln_full = _ln_row.iloc[0].get(_team_name_col, _ln) if not _ln_row.empty else _ln
-
-                            _has_prob = False
-                            _hp_s = _lp_s = _hp_g = None
-                            if not _hn_row.empty and not _ln_row.empty:
-                                _hn_net = _hn_row.iloc[0].get("NET_RATING")
-                                _ln_net = _ln_row.iloc[0].get("NET_RATING")
-                                if _hn_net is not None and _ln_net is not None:
-                                    _md = float(_hn_net) - float(_ln_net)
-                                    _hp_g = 1 / (1 + math.exp(-(_md / 7)))
-                                    _hp_s = _series_prob(_hp_g)
-                                    _lp_s = 1 - _hp_s
-                                    _has_prob = True
-
-                            _label = f"#{_high} {_hn} vs #{_low} {_ln}"
-                            if _has_prob:
-                                _fav = _hn_full if _hp_s >= 0.5 else _ln_full
-                                _fav_prob = _hp_s if _hp_s >= 0.5 else _lp_s
-                                _pred = _predicted_series(_fav.split()[-1], _fav_prob)
-                                _label += f"  —  {_hn.split()[-1]} {_hp_s:.0%} / {_ln.split()[-1]} {_lp_s:.0%}  · Pred: {_pred}"
-
-                            with st.expander(_label):
-                                if _has_prob:
-                                    _bar_col1, _bar_col2 = st.columns(2)
-                                    with _bar_col1:
-                                        st.metric(f"{_hn_full} series win prob", f"{_hp_s:.1%}")
-                                        st.progress(_hp_s)
-                                    with _bar_col2:
-                                        st.metric(f"{_ln_full} series win prob", f"{_lp_s:.1%}")
-                                        st.progress(_lp_s)
-                                    _fav_full = _hn_full if _hp_s >= 0.5 else _ln_full
-                                    _fav_p = _hp_s if _hp_s >= 0.5 else _lp_s
-                                    _prediction = _predicted_series(_fav_full, _fav_p)
-                                    st.markdown(
-                                        f'<div style="background:#1A2035; border-left:4px solid #F0A500; '
-                                        f'padding:8px 14px; border-radius:4px; margin:8px 0;">'
-                                        f'<b style="color:#F0A500;">Prediction:</b> '
-                                        f'<span style="color:#FAFAFA; font-size:1.05em;">{_prediction}</span></div>',
-                                        unsafe_allow_html=True,
+                            # Series win probability for active series
+                            if _s["status"] in ("in_progress", "upcoming") and _tdf is not None:
+                                _nr1 = _net_rating(_s["team1"])
+                                _nr2 = _net_rating(_s["team2"])
+                                if _nr1 is not None and _nr2 is not None:
+                                    _diff = _nr1 - _nr2
+                                    _pg1 = 1 / (1 + math.exp(-(_diff / 7)))
+                                    _ps1 = _series_prob(_pg1)
+                                    _ps2 = 1 - _ps1
+                                    st.caption(
+                                        f"Series probability: {_s['team1'].split()[-1]} {_ps1:.0%} / "
+                                        f"{_s['team2'].split()[-1]} {_ps2:.0%} "
+                                        f"(Net Rtg: {_nr1:+.1f} vs {_nr2:+.1f})"
                                     )
-                                    st.caption(f"Per-game: {_hn_full.split()[-1]} {_hp_g:.1%} / {_ln_full.split()[-1]} {1-_hp_g:.1%}")
-                                else:
-                                    st.info("Net Rating data unavailable — team name may not match between standings and team stats.")
 
-                                # Keys to the series button
-                                _btn_key = f"keys_{_hn}_{_ln}".replace(" ", "_")
-                                _report_key = f"keys_report_{_hn}_{_ln}".replace(" ", "_")
-                                if st.button("Generate Keys to the Series", key=_btn_key,
-                                             disabled=not st.session_state.api_key):
-                                    _hn_stats = _hn_row.iloc[0].to_dict() if not _hn_row.empty else {}
-                                    _ln_stats = _ln_row.iloc[0].to_dict() if not _ln_row.empty else {}
-                                    # Fetch rosters for both teams in this matchup
-                                    _hn_roster = _ensure_roster(_hn_full)
-                                    _ln_roster = _ensure_roster(_ln_full)
-                                    _hn_roster_names = _roster_player_names(_hn_roster)
-                                    _ln_roster_names = _roster_player_names(_ln_roster)
-                                    with st.spinner("Generating matchup keys…"):
-                                        _keys_report = generate_playoff_matchup_keys(
-                                            _hn_full, _ln_full, _hn_stats, _ln_stats,
-                                            _high, _low,
-                                            _hp_s if _has_prob else 0.5,
-                                            graph, st.session_state.api_key,
-                                            roster_t1=_hn_roster_names,
-                                            roster_t2=_ln_roster_names,
+                            # Game log expander
+                            _played = [g for g in _s["games"] if g["played"]]
+                            _sched = [g for g in _s["games"] if not g["played"]]
+                            if _played or _sched:
+                                with st.expander("Games", expanded=(_s["status"] == "in_progress")):
+                                    for _g in _played:
+                                        _winner = _g["home"] if _g["home_score"] > _g["away_score"] else _g["away"]
+                                        st.caption(
+                                            f"{_g['date']}: {_g['away']} {_g['away_score']} @ "
+                                            f"{_g['home']} {_g['home_score']} "
+                                            f"({'**W**' if _winner == _s['team1'] else 'L'})"
                                         )
-                                    st.session_state[_report_key] = _keys_report
+                                    for _g in _sched[:3]:
+                                        st.caption(f"{_g['date']}: {_g['away']} @ {_g['home']} (scheduled)")
 
-                                if st.session_state.get(_report_key):
-                                    st.markdown("---")
-                                    st.markdown(
-                                        f'<div class="report-box">{st.session_state[_report_key]}</div>',
-                                        unsafe_allow_html=True,
-                                    )
+                            # Keys to the series button for active matchups
+                            if _s["status"] in ("in_progress", "upcoming"):
+                                _key_btn_key = f"keys_{_s['team1']}_{_s['team2']}"
+                                if st.session_state.api_key and st.button("Keys to the Series", key=_key_btn_key):
+                                    _t1r = _tdf[_tdf["TEAM_NAME"].str.lower() == _s["team1"].lower()]
+                                    _t2r = _tdf[_tdf["TEAM_NAME"].str.lower() == _s["team2"].lower()]
+                                    _t1_stats = _t1r.iloc[0].to_dict() if not _t1r.empty else {}
+                                    _t2_stats = _t2r.iloc[0].to_dict() if not _t2r.empty else {}
+                                    with st.spinner("Generating keys to the series..."):
+                                        _keys_report = generate_playoff_matchup_keys(
+                                            _s["team1"], _s["team2"],
+                                            _t1_stats, _t2_stats,
+                                            graph, st.session_state.api_key,
+                                        )
+                                    if _keys_report:
+                                        st.markdown(f'<div class="report-box">{_keys_report}</div>', unsafe_allow_html=True)
+                            st.markdown("---")
 
-                    _fr_c1, _fr_c2 = st.columns(2)
-                    with _fr_c1:
-                        _show_matchups(_east, "Eastern Conference")
-                    with _fr_c2:
-                        _show_matchups(_west, "Western Conference")
-                else:
-                    st.markdown(
-                        '<div class="info-box">Could not parse standings columns. '
-                        'Playoff projections unavailable.</div>',
-                        unsafe_allow_html=True,
-                    )
+            st.markdown("---")
 
             st.markdown("---")
 

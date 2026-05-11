@@ -750,6 +750,8 @@ def _aggregate_career_splits_v2(raw_df: pd.DataFrame) -> List[Dict]:
         fg3a = _sf("FG3A") or 0.0
         fg3p = _sf("FG3_PCT")
         fta  = _sf("FTA") or 0.0
+        ftm  = _sf("FTM") or 0.0
+        ft_pct_raw = _sf("FT_PCT")
         pts  = _sf("PTS")
         tov  = _sf("TOV") or 0.0
         ast  = _sf("AST")
@@ -761,6 +763,7 @@ def _aggregate_career_splits_v2(raw_df: pd.DataFrame) -> List[Dict]:
         tov_d    = fga + 0.44 * fta + tov
         tov_pct  = tov / tov_d          if tov_d > 0                       else None
         ft_rate  = fta / fga             if fga > 2                        else None
+        ft_pct   = ft_pct_raw            if ft_pct_raw is not None         else (ftm / fta if fta > 0 else None)
         fg3_pct  = fg3p                  if fg3a and fg3a >= 1.5           else None
         # PerMode=PerGame — FTA and FG3A are already per-game averages
         fta_pg   = fta   if fta  > 0 else None
@@ -781,6 +784,7 @@ def _aggregate_career_splits_v2(raw_df: pd.DataFrame) -> List[Dict]:
             "efg_pct":   efg_pct,
             "tov_pct":   tov_pct,
             "ft_rate":   ft_rate,
+            "ft_pct":    ft_pct,
         })
     return rows
 
@@ -904,6 +908,39 @@ def get_team_roster(
         return pd.DataFrame()
     # Result set 0 = roster, result set 1 = coaches
     return _parse_nba_result_set(data, idx=0)
+
+
+def get_team_head_coach(
+    team_id: int,
+    season: str = "2025-26",
+    force_refresh: bool = False,
+) -> Optional[str]:
+    """
+    Return the head coach name for a team, reusing the commonteamroster cache.
+    Returns None if unavailable.
+    """
+    safe = season.replace("-", "_")
+    cache_path = CACHE_DIR / f"roster_{team_id}_{safe}.json"
+    url = (
+        "https://stats.nba.com/stats/commonteamroster"
+        f"?TeamID={team_id}&Season={season}"
+    )
+    data = _fetch_nba_direct(url, cache_path, force_refresh)
+    if not data:
+        return None
+    coaches_df = _parse_nba_result_set(data, idx=1)
+    if coaches_df.empty:
+        return None
+    # Head coach: IS_ASSISTANT == 0, or COACH_TYPE contains 'Head', or SORT_SEQUENCE == 1
+    head = None
+    for _, row in coaches_df.iterrows():
+        is_asst = row.get("IS_ASSISTANT")
+        coach_type = str(row.get("COACH_TYPE", "")).lower()
+        sort_seq = row.get("SORT_SEQUENCE")
+        if str(is_asst) == "0" or "head" in coach_type or sort_seq == 1:
+            head = row.get("COACH_NAME") or f"{row.get('FIRST_NAME', '')} {row.get('LAST_NAME', '')}".strip()
+            break
+    return head or None
 
 
 def get_player_shot_chart(
