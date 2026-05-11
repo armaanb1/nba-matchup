@@ -175,6 +175,26 @@ def fmt_game_log_context(
             f"+/- {avg('plus_minus'):.1f}"
         )
 
+        # Per-opponent FTA summary (surfaces hack-a patterns)
+        if "opponent" in season_logs.columns:
+            opp_fta = (
+                season_logs.groupby("opponent")
+                .agg(games=("fta", "count"), total_fta=("fta", "sum"), total_ftm=("ftm", "sum"))
+                .assign(fta_pg=lambda d: d["total_fta"] / d["games"],
+                        ft_pct=lambda d: d["total_ftm"] / d["total_fta"].clip(lower=1))
+                .sort_values("fta_pg", ascending=False)
+            )
+            high_fta = opp_fta[opp_fta["fta_pg"] >= 2.0]
+            if not high_fta.empty:
+                lines = ["  FTA/g by opponent (teams where FTA/g ≥ 2.0 — potential hack targets):"]
+                for opp, row in high_fta.iterrows():
+                    opp_name = str(opp).replace("_", " ").title()
+                    lines.append(
+                        f"    vs {opp_name}: {row['fta_pg']:.1f} FTA/g "
+                        f"({row['ft_pct']:.1%} FT%) over {int(row['games'])}g"
+                    )
+                parts.append("\n".join(lines))
+
         # Full per-game log
         parts.append(f"  Full game log:")
         for _, row in season_logs.iterrows():
@@ -200,23 +220,37 @@ def fmt_game_log_context(
 
         pfg_pct = pavg("fgm") / pavg("fga") if pavg("fga") > 0 else 0
         pfg3_pct = pavg("fg3m") / pavg("fg3a") if pavg("fg3a") > 0 else 0
+        pft_pct = pavg("ftm") / pavg("fta") if pavg("fta") > 0 else 0
 
         parts.append(
             f"  Overall: PPG {pavg('pts'):.1f} | FGA/g {pavg('fga'):.1f} | "
-            f"FG% {pfg_pct:.1%} | 3PA/g {pavg('fg3a'):.1f} | 3P% {pfg3_pct:.1%} | "
-            f"FTA/g {pavg('fta'):.1f} | APG {pavg('ast'):.1f} | "
-            f"+/- {pavg('plus_minus'):.1f}"
+            f"FG% {pfg_pct:.1%} | FTA/g {pavg('fta'):.1f} | FT% {pft_pct:.1%} | "
+            f"3PA/g {pavg('fg3a'):.1f} | 3P% {pfg3_pct:.1%} | "
+            f"APG {pavg('ast'):.1f} | +/- {pavg('plus_minus'):.1f}"
         )
 
-        # Break down by opponent (series)
+        # Per-game playoff log
+        parts.append(f"  Playoff game log:")
+        for _, row in playoff_logs.iterrows():
+            opp = row["opponent"].replace("_", " ").title()
+            parts.append(
+                f"    {row['date']} vs {opp} ({row['outcome']}): "
+                f"{row['pts']}pts {row['fgm']}/{row['fga']}FG "
+                f"{row['ftm']}/{row['fta']}FT {row['ast']}ast {row['reb']}reb "
+                f"+/-{row['plus_minus']}"
+            )
+
+        # Series breakdown with FT% per series
         if "opponent" in playoff_logs.columns:
+            parts.append(f"  Series averages:")
             for opp, grp in playoff_logs.groupby("opponent"):
                 opp_name = opp.replace("_", " ").title()
                 g = len(grp)
+                s_ft_pct = grp["ftm"].sum() / grp["fta"].sum() if grp["fta"].sum() > 0 else 0
                 parts.append(
-                    f"  vs {opp_name} ({g}g): "
+                    f"    vs {opp_name} ({g}g): "
                     f"{grp['pts'].mean():.1f}pts "
-                    f"{grp['fta'].mean():.1f}FTA "
+                    f"{grp['fta'].mean():.1f}FTA/g ({s_ft_pct:.1%} FT%) "
                     f"{grp['ast'].mean():.1f}ast "
                     f"+/-{grp['plus_minus'].mean():.1f}"
                 )

@@ -1529,7 +1529,9 @@ with tab4:
 
                 with st.spinner(_spinner_msg):
 
-                    # Named players -- full data + game logs
+                    # Named players -- full data + game logs + own team's head coach
+                    _static_player_tid_map = {t["nickname"]: t["id"] for t in _nba_teams_static.get_teams()}
+                    _injected_team_coaches: set = set()  # avoid duplication with team section
                     for _pid, _pname in list(_named_players.items())[:3]:
                         player_obj = graph.players.get(_pid) if graph else None
                         if player_obj:
@@ -1537,6 +1539,20 @@ with tab4:
                             _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
                             _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
                             _career_parts.append(fmt_current_season_context(player_obj, _zones, _off_hood, _def_hood))
+                            # Inject head coach for the player's own team
+                            _player_team = (player_obj.team or "").strip()
+                            if _player_team and _player_team not in _injected_team_coaches:
+                                _p_tid = _static_player_tid_map.get(_player_team)
+                                if _p_tid:
+                                    try:
+                                        _p_coach = get_team_head_coach(
+                                            _p_tid, season=_season
+                                        )
+                                        if _p_coach:
+                                            _career_parts.append(f"{_player_team} head coach: {_p_coach}")
+                                            _injected_team_coaches.add(_player_team)
+                                    except Exception:
+                                        pass
                         _cdf = None
                         for _attempt in range(3):
                             try:
