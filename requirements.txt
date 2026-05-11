@@ -9,4 +9,3 @@ requests>=2.32.0
 beautifulsoup4>=4.12.0
 anthropic>=0.28.0
 scipy>=1.13.0
-basketball_reference_web_scraper>=4.6.0
