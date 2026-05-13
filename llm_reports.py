@@ -552,32 +552,47 @@ def _build_profile_prompt(
 {_fmt_neighborhood_summary(neighborhood, role=role, top_n=6)}{zone_section}
 """.strip()
 
-    if zone_ctx:
-        zone_profile_instruction = (
-            f" Shot distribution data is provided — use it to identify exactly where {player.name} "
-            f"operates on the floor, which zones are genuine weapons vs. pressure releases, "
-            f"and what that means for how a defense should load and position. "
-            f"Do not list the zones. Draw conclusions from them."
+    if role == "offense":
+        if zone_ctx:
+            zone_instruction = (
+                f" Shot distribution data is provided — use it to identify exactly where {player.name} "
+                f"operates, which zones are genuine weapons vs. pressure releases, and what that means "
+                f"for how a defense must load and position. Do not list the zones. Draw conclusions from them."
+            )
+        else:
+            zone_instruction = ""
+
+        return (
+            f"Write a scouting report on {player.name} as an offensive player, for a coaching staff "
+            f"preparing to defend him. Answer: where does he score, why does it work given his physical tools, "
+            f"and what schematic or physical conditions shut him down.{zone_instruction} "
+            f"The neighborhood data shows his PPP against each defender he has faced — use it to identify "
+            f"the defensive archetype that limits him and explain the physical reason why that body type "
+            f"disrupts his game, then name the archetype that gets exploited and why. "
+            f"If career trajectory data shows a trend that changes the defensive read — declining FTA, "
+            f"three-point volume without efficiency, slipping rim conversion — weave it in. Do not write a career section. "
+            f"Close with one specific scheme recommendation naming the play type, the coverage scheme, "
+            f"and the floor zone to force {player.name} toward. "
+            f"Every number supports an argument about how to guard him.\n\n{context}"
         )
     else:
-        zone_profile_instruction = ""
-
-    role_label = "offensive player" if role == "offense" else "defender"
-
-    return (
-        f"Write a scouting report on {player.name} as a {role_label}. "
-        f"This is for a coaching staff who needs to understand not just what {player.name} does, "
-        f"but why it works and what physical or schematic conditions make it break down. "
-        f"Lead with where on the floor they operate and the mechanical reason those zones produce their numbers — "
-        f"connect every efficiency figure to a physical attribute, skill, or coverage context.{zone_profile_instruction} "
-        f"Identify the defensive archetype that neutralizes them and explain the physical matchup reason — "
-        f"not just that it happens, but why that body type or coverage scheme specifically disrupts their game. "
-        f"If career trajectory data shows a meaningful trend that changes the tactical read, "
-        f"weave it in where it matters — do not write a career section. "
-        f"Close with one concrete scheme recommendation naming the play type, the coverage scheme, "
-        f"and the floor zone to force {player.name} toward. "
-        f"Do not list stats. Every number exists to support an argument about how to defend this player.\n\n{context}"
-    )
+        return (
+            f"Write a scouting report on {player.name} as a defender, for a coaching staff preparing "
+            f"to attack him. Answer: how does he guard, what are his physical tools and limitations, "
+            f"and which offensive profiles consistently score on him. "
+            f"The neighborhood data shows PPP allowed per offensive player he has guarded — use it to identify "
+            f"the offensive archetype that exploits him and explain the physical reason why that matchup "
+            f"works, then identify what archetype he handles well and why his length, positioning, or scheme "
+            f"disrupts those players. "
+            f"His own offensive profile is relevant only if his scoring load forces the opponent to make "
+            f"trade-offs — e.g. if he is a threat that commands attention off-ball and that changes how "
+            f"a defense can load toward his assignment. "
+            f"If career trajectory data shows a trend that changes the attacking read — declining lateral "
+            f"quickness, changing role, foul-rate patterns — weave it in. Do not write a career section. "
+            f"Close with one specific scheme recommendation naming the play type, the action to run at him, "
+            f"and the floor zone where the offense should initiate. "
+            f"Every number supports an argument about how to score against him.\n\n{context}"
+        )
 
 
 def generate_player_profile_report(
