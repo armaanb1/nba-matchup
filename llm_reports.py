@@ -324,8 +324,10 @@ SYSTEM_PROMPT = (
     "the specific players as examples. "
 
     "6. The head-to-head matchup section must be the sharpest part of the report. "
-    "This is what the coach actually needs. Lead with what the data shows in that specific pairing, "
-    "explain the physical reason it happened, then state what it means for game planning. "
+    "This is what the coach actually needs. Open with the headline finding from the data — "
+    "the single most important thing the PPP, FG%, or possession count reveals about this pairing. "
+    "Then give the physical reason it happened. Then state the game-plan implication. "
+    "Do not set up the matchup with background; get to the finding immediately. "
 
     "7. The strategic recommendation must be a specific action with a specific trigger. "
     "It must reference the offensive player's weakest high-volume zone and the defensive player's "
@@ -337,9 +339,18 @@ SYSTEM_PROMPT = (
     "off the line. If the trend confirms what this season already shows, skip it. "
     "Current season stats always lead. "
 
-    "9. No title, header, preamble, or intro line. Start directly with the offensive profile section. "
-    "Structure: OFFENSIVE PROFILE → DEFENSIVE ARCHETYPE ANALYSIS → [DEFENDER NAME] MATCHUP → "
-    "STRATEGIC RECOMMENDATION. Keep each section tight — total report 350-450 words. "
+    "9. No title, header, bullet points, or preamble anywhere in the report — not even section labels. "
+    "Write continuous prose. Start directly with the offensive profile. "
+    "Structure your four paragraphs as follows: "
+    "(1) OFFENSIVE PROFILE — where the player operates, why those zones work given their physical tools, "
+    "which shot zones are weapons vs. volume releases; "
+    "(2) DEFENSIVE ARCHETYPE ANALYSIS — which archetypes contain them and why mechanically, "
+    "which archetypes struggle and the physical reason; "
+    "(3) THE SPECIFIC MATCHUP — what the head-to-head data shows about this exact pairing, "
+    "the physical explanation, and the game-plan consequence; "
+    "(4) STRATEGIC RECOMMENDATION — one specific triggered action naming play type, coverage scheme, "
+    "and the floor zone to force the offensive player toward. "
+    "Total report: 400-500 words. "
 
     "10. Write about the offensive player first, in full, before addressing the defensive player. "
     "The offensive profile must describe: where on the floor they operate, why they are effective "
@@ -394,28 +405,32 @@ def _build_matchup_prompt(
 {_fmt_neighborhood_summary(def_neighborhood, role='defense')}{zone_section}
 """.strip()
 
-    shot_zone_instruction = (
-        f" The shot distribution data is provided — use it to build the offensive profile. "
-        f"Specify exactly where {off_player.name} attacks, distinguish genuine weapons from "
-        f"volume zones, and call out corner 3 vs. above-break 3 tendencies and paint frequency. "
-        f"Do not list the zones — explain what they reveal about how the defense must position."
-        if (off_zone_ctx or def_zone_ctx) else ""
+    if off_zone_ctx or def_zone_ctx:
+        zone_profile_instruction = (
+            f" Shot distribution data is provided — use it inside the offensive profile to specify "
+            f"exactly where {off_player.name} attacks, distinguish genuine weapons from volume zones, "
+            f"and contrast corner 3 vs. above-break 3 tendencies and paint frequency. "
+            f"Do not list the zones — draw conclusions about how the defense must position."
+        )
+    else:
+        zone_profile_instruction = ""
+
+    defender_offense_instruction = (
+        f" Only reference {def_player.name}'s own offensive role if his usage or scoring load is "
+        f"notably high for a player in this defensive assignment — and only if it changes how the "
+        f"coaching staff should manage his minutes or deployment."
     )
 
     return (
         f"Write a scouting report on {off_player.name} as the offensive player being guarded by {def_player.name}. "
         f"The report is for a coaching staff preparing a defensive game plan. "
         f"Start with {off_player.name}'s offensive profile — where he operates, why those zones work given his physical tools, "
-        f"which archetypes struggle to contain him and why, and which archetypes neutralize him and the mechanical reason. "
-        f"Then analyze {def_player.name} specifically as the matchup — what his physical profile means for this pairing, "
-        f"what the head-to-head data shows, and whether the data confirms or complicates the expected outcome. "
-        f"If {def_player.name}'s own offensive efficiency or workload is relevant to how the coaching staff "
-        f"should manage his minutes or deployment, include it. "
+        f"which archetypes struggle to contain him and why, and which archetypes neutralize him and the mechanical reason.{zone_profile_instruction} "
+        f"Then analyze {def_player.name} specifically as the matchup — what his physical profile means for this pairing "
+        f"and what the head-to-head data shows about whether that expectation held.{defender_offense_instruction} "
         f"Close with one specific, triggered strategic recommendation that names the play type, "
-        f"the coverage scheme, and the floor zone to force {off_player.name} toward."
-        f"{shot_zone_instruction} "
-        f"Use the stats in the context below as evidence — weave them parenthetically into the argument. "
-        f"Only cite numbers that appear in the data provided. Never invent or approximate a figure.\n\n{context}"
+        f"the coverage scheme, and the floor zone to force {off_player.name} toward. "
+        f"Use the stats in the context below as evidence — weave them parenthetically into the argument.\n\n{context}"
     )
 
 
@@ -481,26 +496,30 @@ def _build_profile_prompt(
 {_fmt_neighborhood_summary(neighborhood, role=role, top_n=6)}{zone_section}
 """.strip()
 
-    shot_zone_instruction = (
-        f" Shot distribution data is provided — use it to identify exactly where {player.name} "
-        f"operates on the floor, which zones are genuine weapons vs. pressure releases, "
-        f"and what that means for how a defense should load and position. "
-        f"Do not list the zones. Draw conclusions from them."
-        if zone_ctx else ""
-    )
+    if zone_ctx:
+        zone_profile_instruction = (
+            f" Shot distribution data is provided — use it to identify exactly where {player.name} "
+            f"operates on the floor, which zones are genuine weapons vs. pressure releases, "
+            f"and what that means for how a defense should load and position. "
+            f"Do not list the zones. Draw conclusions from them."
+        )
+    else:
+        zone_profile_instruction = ""
+
+    role_label = "offensive player" if role == "offense" else "defender"
 
     return (
-        f"Write a scouting report on {player.name} as a {'scorer' if role == 'offense' else 'defender'}. "
+        f"Write a scouting report on {player.name} as a {role_label}. "
         f"This is for a coaching staff who needs to understand not just what {player.name} does, "
         f"but why it works and what physical or schematic conditions make it break down. "
         f"Lead with where on the floor they operate and the mechanical reason those zones produce their numbers — "
-        f"connect every efficiency figure to a physical attribute, skill, or coverage context. "
+        f"connect every efficiency figure to a physical attribute, skill, or coverage context.{zone_profile_instruction} "
         f"Identify the defensive archetype that neutralizes them and explain the physical matchup reason — "
         f"not just that it happens, but why that body type or coverage scheme specifically disrupts their game. "
         f"If career trajectory data shows a meaningful trend that changes the tactical read, "
-        f"weave it in where it matters — do not write a career section."
-        f"{shot_zone_instruction} "
-        f"Close with one concrete scheme recommendation a coaching staff could install tomorrow. "
+        f"weave it in where it matters — do not write a career section. "
+        f"Close with one concrete scheme recommendation naming the play type, the coverage scheme, "
+        f"and the floor zone to force {player.name} toward. "
         f"Do not list stats. Every number exists to support an argument about how to defend this player.\n\n{context}"
     )
 
@@ -776,8 +795,8 @@ ANALYST_SYSTEM_PROMPT = (
     "2. Lead with the core answer, not background context. The person asking already knows basketball. "
     "3. Use scout language: scheme names, coverage types, play actions, positional archetypes, physical tools. "
     "Drop coverage. ICE. Switching. Spain pick-and-roll. DHO. Nail help. Weak-side skip. "
-    "4. When a concept has nuance, explain the nuance — but commit to a position. "
-    "Do not give both sides and leave the person to decide. Tell them what you actually think. "
+    "4. When a concept has nuance, explain the nuance — then commit to the most defensible position "
+    "and explain your reasoning. Do not present both sides equally and leave the person to decide. "
     "5. Cite real players or real teams as examples where they make the argument sharper. "
     "6. Anchor every analytical claim with a specific statistic in parentheses. "
     "Narrative without numbers is opinion, not analysis. "
@@ -788,13 +807,9 @@ ANALYST_SYSTEM_PROMPT = (
     "STEP 3 — Never be vague ('mid-30s range', 'roughly X', 'around Y') when the exact figure is in the data. "
     "Vague numbers are worse than no numbers. "
     "The data section is the only permitted source of specific statistics. "
-    "7. Player and team facts must come from the injected data, not training knowledge. "
-    "Rosters change constantly. If the data says a player is on a team, use that. "
-    "Never assign a player to a team based on what you remember from training — "
-    "those rosters may be a year or more out of date. "
-    "If no team is provided for a player, do not guess their team. "
-    "Head coaches are provided in the team data when available — use those names. "
-    "If no head coach is listed for a team, do not name one from memory. "
+    "7. All player teams, head coaches, and roster facts must come from the injected data only — "
+    "never from training knowledge, which may be a year or more out of date. "
+    "If a player's team or a team's head coach is not listed in the data, do not name one. "
     "8. Write in complete paragraphs. No bullet points. No numbered lists. "
     "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
     "9. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
