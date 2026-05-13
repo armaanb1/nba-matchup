@@ -569,12 +569,19 @@ def fmt_boxscore(box: Dict) -> str:
     return "\n".join(lines)
 
 
+def _is_clean_game(g: Dict) -> bool:
+    """Reject malformed bracket entries where the full schedule got concatenated into one row."""
+    home = str(g.get("home", ""))
+    away = str(g.get("away", ""))
+    return "Game" not in home and "Game" not in away and len(home) <= 50 and len(away) <= 50
+
+
 def get_playoff_series_boxscores(series: Dict, season_end_year: int) -> str:
     """
     Fetch and format full box scores for all played games in a playoff series.
     Returns formatted string for LLM context, empty string on failure.
     """
-    games = [g for g in series.get("games", []) if g.get("played")]
+    games = [g for g in series.get("games", []) if g.get("played") and _is_clean_game(g)]
     if not games:
         return ""
 
@@ -809,6 +816,8 @@ def fmt_playoff_context(
                 result = "Upcoming"
             lines.append(f"  {s['team1']} vs {s['team2']}: {result}")
             for g in s.get("games", []):
+                if not _is_clean_game(g):
+                    continue
                 if g.get("played"):
                     lines.append(
                         f"    {g['date']}: {g['away']} {g['away_score']} @ "
