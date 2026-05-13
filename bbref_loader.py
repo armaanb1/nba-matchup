@@ -517,3 +517,59 @@ def get_bbref_playoff_bracket(season_end_year: int) -> List[Dict]:
     order = {"in_progress": 0, "upcoming": 1, "completed": 2}
     series_list.sort(key=lambda s: (order[s["status"]], -s["round_num"]))
     return series_list
+
+
+def fmt_playoff_context(
+    bracket: List[Dict],
+    filter_teams: Optional[List[str]] = None,
+) -> str:
+    """
+    Format playoff bracket data as LLM context.
+    filter_teams: if provided, only include series involving those teams.
+    Returns empty string if bracket is empty.
+    """
+    if not bracket:
+        return ""
+
+    # Group by round for cleaner output
+    from collections import defaultdict
+    by_round: Dict[str, List[Dict]] = defaultdict(list)
+    for s in bracket:
+        key = f"{s['conf']} — {s['round_name']}"
+        by_round[key].append(s)
+
+    # If filtering, drop series with no matching team
+    def _matches(s: Dict) -> bool:
+        if not filter_teams:
+            return True
+        t1, t2 = s["team1"].lower(), s["team2"].lower()
+        return any(ft.lower() in t1 or ft.lower() in t2 for ft in filter_teams)
+
+    lines = ["=== 2025-26 NBA PLAYOFFS ==="]
+    for section, series_in_round in by_round.items():
+        matching = [s for s in series_in_round if _matches(s)]
+        if not matching:
+            continue
+        lines.append(f"\n{section.upper()}")
+        for s in matching:
+            w1, w2 = s["wins1"], s["wins2"]
+            status = s["status"]
+            if status == "completed":
+                winner = s["leader"] or (s["team1"] if w1 > w2 else s["team2"])
+                result = f"{winner} win {max(w1,w2)}-{min(w1,w2)}"
+            elif status == "in_progress":
+                leader = s.get("leader")
+                result = f"{leader} lead {w1}-{w2}" if leader else f"Tied {w1}-{w2}"
+            else:
+                result = "Upcoming"
+            lines.append(f"  {s['team1']} vs {s['team2']}: {result}")
+            for g in s.get("games", []):
+                if g.get("played"):
+                    lines.append(
+                        f"    {g['date']}: {g['away']} {g['away_score']} @ "
+                        f"{g['home']} {g['home_score']}"
+                    )
+                else:
+                    lines.append(f"    {g['date']}: {g['away']} @ {g['home']} (scheduled)")
+
+    return "\n".join(lines) if len(lines) > 1 else ""

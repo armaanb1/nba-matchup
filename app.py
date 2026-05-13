@@ -30,6 +30,7 @@ from data_loader import (
 from bbref_loader import (
     get_bbref_team_stats,
     get_bbref_playoff_bracket,
+    fmt_playoff_context,
 )
 from nba_api.stats.static import players as _nba_players_static
 from nba_api.stats.static import teams as _nba_teams_static
@@ -1680,6 +1681,26 @@ with tab4:
                                     if _cp.player_id not in _named_players:
                                         _concept_lines.append(fmt_player_compact(_cp, _career_cache.get(_cp.player_id)))
                                 _career_parts.append("\n".join(_concept_lines))
+
+                    # Playoff bracket — inject when playoffs concept or teams detected
+                    if "playoffs" in _detected_concepts or _detected_teams:
+                        _bracket = st.session_state.get("playoff_bracket_list")
+                        if not _bracket:
+                            # Fetch inline if not loaded yet
+                            try:
+                                _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+                                _bracket = get_bbref_playoff_bracket(_season_end_yr)
+                                if _bracket:
+                                    st.session_state.playoff_bracket_list = _bracket
+                            except Exception:
+                                _bracket = []
+                        if _bracket:
+                            _bracket_ctx = fmt_playoff_context(
+                                _bracket,
+                                filter_teams=_detected_teams if _detected_teams else None,
+                            )
+                            if _bracket_ctx:
+                                _career_parts.append(_bracket_ctx)
 
                 _career_context = ""
                 if _career_parts:
