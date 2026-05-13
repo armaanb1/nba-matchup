@@ -359,6 +359,45 @@ SYSTEM_PROMPT = (
 )
 
 
+def _fmt_team_context(
+    off_team: str,
+    def_team: str,
+    off_record: Optional[Dict] = None,
+    def_record: Optional[Dict] = None,
+    h2h: Optional[Dict] = None,
+) -> str:
+    """Format team records and H2H into a context block."""
+    lines = []
+    if off_record:
+        w, l = int(off_record.get("W", 0) or 0), int(off_record.get("L", 0) or 0)
+        conf = off_record.get("Conference", "")
+        seed = off_record.get("PlayoffRank")
+        seed_str = f", {seed}{_ordinal(seed)} seed" if seed and seed < 99 else ""
+        lines.append(f"{off_team}: {w}-{l}{(' (' + conf + seed_str + ')') if conf else ''}")
+    if def_record:
+        w, l = int(def_record.get("W", 0) or 0), int(def_record.get("L", 0) or 0)
+        conf = def_record.get("Conference", "")
+        seed = def_record.get("PlayoffRank")
+        seed_str = f", {seed}{_ordinal(seed)} seed" if seed and seed < 99 else ""
+        lines.append(f"{def_team}: {w}-{l}{(' (' + conf + seed_str + ')') if conf else ''}")
+    if h2h and (h2h.get("team1_wins", 0) + h2h.get("team2_wins", 0)) > 0:
+        t1w = h2h["team1_wins"]
+        t2w = h2h["team2_wins"]
+        total = t1w + t2w
+        lines.append(
+            f"Season series ({total}g): {off_team} {t1w}-{t2w} {def_team}"
+        )
+    return "\n".join(lines)
+
+
+def _ordinal(n) -> str:
+    try:
+        n = int(n)
+        return {1: "st", 2: "nd", 3: "rd"}.get(n if n < 20 else n % 10, "th")
+    except (TypeError, ValueError):
+        return "th"
+
+
 def _build_matchup_prompt(
     edge: MatchupEdge,
     off_player: Player,
@@ -369,6 +408,9 @@ def _build_matchup_prompt(
     def_shot_zones: Optional[Dict] = None,
     off_career_df: Optional[pd.DataFrame] = None,
     def_career_df: Optional[pd.DataFrame] = None,
+    off_team_record: Optional[Dict] = None,
+    def_team_record: Optional[Dict] = None,
+    h2h_record: Optional[Dict] = None,
 ) -> str:
     """Build the matchup report prompt string (shared by sync and streaming callers)."""
     off_zone_ctx = _fmt_shot_zones(off_shot_zones or {}, off_player.name)
@@ -388,6 +430,12 @@ def _build_matchup_prompt(
     off_career_section = f"\n\n=== {off_player.name.upper()} CAREER TRAJECTORY ===\n{off_career_ctx}" if off_career_ctx else ""
     def_career_section = f"\n\n=== {def_player.name.upper()} CAREER TRAJECTORY ===\n{def_career_ctx}" if def_career_ctx else ""
 
+    team_ctx = _fmt_team_context(
+        off_player.team or "Unknown", def_player.team or "Unknown",
+        off_team_record, def_team_record, h2h_record,
+    )
+    team_section = f"\n\n=== SERIES CONTEXT ===\n{team_ctx}" if team_ctx else ""
+
     context = f"""
 === OFFENSIVE PLAYER: {off_player.name.upper()} ===
 {_fmt_player_bio(off_player)}{off_career_section}
@@ -402,7 +450,7 @@ def _build_matchup_prompt(
 {_fmt_neighborhood_summary(off_neighborhood, role='offense')}
 
 === {def_player.name.upper()} DEFENSIVE CONTEXT ===
-{_fmt_neighborhood_summary(def_neighborhood, role='defense')}{zone_section}
+{_fmt_neighborhood_summary(def_neighborhood, role='defense')}{zone_section}{team_section}
 """.strip()
 
     if off_zone_ctx or def_zone_ctx:
@@ -445,11 +493,15 @@ def generate_matchup_report(
     def_shot_zones: Optional[Dict] = None,
     off_career_df: Optional[pd.DataFrame] = None,
     def_career_df: Optional[pd.DataFrame] = None,
+    off_team_record: Optional[Dict] = None,
+    def_team_record: Optional[Dict] = None,
+    h2h_record: Optional[Dict] = None,
 ) -> str:
     """Generate a scouting report (blocking, returns full string)."""
     prompt = _build_matchup_prompt(
         edge, off_player, def_player, off_neighborhood, def_neighborhood,
         off_shot_zones, def_shot_zones, off_career_df, def_career_df,
+        off_team_record, def_team_record, h2h_record,
     )
     return _call_anthropic(prompt, api_key)
 
@@ -465,11 +517,15 @@ def stream_matchup_report(
     def_shot_zones: Optional[Dict] = None,
     off_career_df: Optional[pd.DataFrame] = None,
     def_career_df: Optional[pd.DataFrame] = None,
+    off_team_record: Optional[Dict] = None,
+    def_team_record: Optional[Dict] = None,
+    h2h_record: Optional[Dict] = None,
 ):
     """Streaming variant — yields text chunks as they arrive from the API."""
     prompt = _build_matchup_prompt(
         edge, off_player, def_player, off_neighborhood, def_neighborhood,
         off_shot_zones, def_shot_zones, off_career_df, def_career_df,
+        off_team_record, def_team_record, h2h_record,
     )
     return stream_report(prompt, api_key)
 

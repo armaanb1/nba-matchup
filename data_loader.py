@@ -943,6 +943,88 @@ def get_team_head_coach(
     return head or None
 
 
+def get_team_h2h_record(
+    team1_id: int,
+    team2_id: int,
+    season: str = "2025-26",
+    season_type: str = "Regular Season",
+) -> Dict:
+    """
+    Return the head-to-head record between two teams for the given season.
+
+    Result dict:
+      team1_wins, team2_wins, games: [{date, team1_score, team2_score, winner}]
+    Cached at data/cache/h2h_{team1_id}_{team2_id}_{season}.json.
+    """
+    # Normalise so the smaller ID is always team1 in the cache key
+    t_lo, t_hi = sorted([team1_id, team2_id])
+    safe_season = season.replace("-", "_")
+    cache_path = CACHE_DIR / f"h2h_{t_lo}_{t_hi}_{safe_season}.json"
+
+    if cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    from nba_api.stats.endpoints import teamgamelog
+
+    result: Dict = {"team1_wins": 0, "team2_wins": 0, "games": []}
+
+    for tid, opp_id in [(team1_id, team2_id), (team2_id, team1_id)]:
+        try:
+            gl = teamgamelog.TeamGameLog(
+                team_id=tid,
+                season=season,
+                season_type_all_star=season_type,
+                timeout=30,
+            )
+            time.sleep(NBA_API_DELAY)
+            df = gl.get_data_frames()[0]
+            if df.empty:
+                continue
+            # Filter to games against the opponent
+            opp_games = df[df["MATCHUP"].str.contains(
+                _team_abbr_from_id(opp_id) or "XXXXXX", na=False
+            )]
+            for _, row in opp_games.iterrows():
+                wl = str(row.get("WL", ""))
+                pts = int(row.get("PTS", 0) or 0)
+                # We'll fill in opponent score from the reverse pass
+                result["games"].append({
+                    "date": str(row.get("GAME_DATE", "")),
+                    "team_id": tid,
+                    "team_score": pts,
+                    "wl": wl,
+                })
+                if wl == "W":
+                    if tid == team1_id:
+                        result["team1_wins"] += 1
+                    else:
+                        result["team2_wins"] += 1
+        except Exception:
+            pass
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
+
+    return result
+
+
+def _team_abbr_from_id(team_id: int) -> Optional[str]:
+    """Return the 3-letter abbreviation for a static team ID."""
+    from nba_api.stats.static import teams as _st
+    for t in _st.get_teams():
+        if t["id"] == team_id:
+            return t["abbreviation"]
+    return None
+
+
 def get_player_shot_chart(
     player_id: int,
     season: str = "2025-26",

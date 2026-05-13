@@ -23,6 +23,7 @@ from data_loader import (
     get_player_shot_chart,
     get_player_shot_zones,
     get_team_head_coach,
+    get_team_h2h_record,
     get_team_roster,
     load_matchup_data,
 )
@@ -1375,16 +1376,46 @@ with tab4:
 
             if edge and off_p and def_p:
                 with st.spinner(f"Fetching stats for {off_r} and {def_r}…"):
-                    _off_zones = get_player_shot_zones(
-                        off_pid, st.session_state.get("season", "2025-26"),
-                        st.session_state.get("season_type", "Regular Season"),
-                    ) if off_pid else {}
-                    _def_zones = get_player_shot_zones(
-                        def_pid, st.session_state.get("season", "2025-26"),
-                        st.session_state.get("season_type", "Regular Season"),
-                    ) if def_pid else {}
+                    _season_key = st.session_state.get("season", "2025-26")
+                    _stype_key  = st.session_state.get("season_type", "Regular Season")
+                    _off_zones = get_player_shot_zones(off_pid, _season_key, _stype_key) if off_pid else {}
+                    _def_zones = get_player_shot_zones(def_pid, _season_key, _stype_key) if def_pid else {}
                     _off_career_df, _ = _get_career_df_fast(off_pid)
                     _def_career_df, _ = _get_career_df_fast(def_pid)
+
+                    # Team records from team_stats_df
+                    _tdf_rpt = st.session_state.get("team_stats_df")
+                    _off_team_rec = _def_team_rec = None
+                    if _tdf_rpt is not None and not _tdf_rpt.empty:
+                        def _lookup_rec(team_name):
+                            if not team_name:
+                                return None
+                            nick = team_name.split()[-1]
+                            row = _tdf_rpt[_tdf_rpt["TEAM_NAME"].str.lower().str.contains(nick.lower(), na=False)]
+                            return row.iloc[0].to_dict() if not row.empty else None
+                        _off_team_rec = _lookup_rec(off_p.team)
+                        _def_team_rec = _lookup_rec(def_p.team)
+
+                    # Head-to-head record between the two teams
+                    _h2h_rec = None
+                    _tid_map_rpt = {t["nickname"]: t["id"] for t in _nba_teams_static.get_teams()}
+                    _off_tid = _tid_map_rpt.get((off_p.team or "").split()[-1]) if off_p.team else None
+                    _def_tid = _tid_map_rpt.get((def_p.team or "").split()[-1]) if def_p.team else None
+                    if _off_tid and _def_tid and _off_tid != _def_tid:
+                        try:
+                            _h2h_raw = get_team_h2h_record(_off_tid, _def_tid, season=_season_key)
+                            # Reorder so team1 = off_player's team
+                            if _h2h_raw.get("games") and _h2h_raw["games"] and \
+                               _h2h_raw["games"][0].get("team_id") == _def_tid:
+                                _h2h_rec = {
+                                    "team1_wins": _h2h_raw["team2_wins"],
+                                    "team2_wins": _h2h_raw["team1_wins"],
+                                    "games": _h2h_raw["games"],
+                                }
+                            else:
+                                _h2h_rec = _h2h_raw
+                        except Exception:
+                            pass
 
                 st.markdown("---")
                 st.markdown(f"### Scouting Report: {off_r} vs {def_r}")
@@ -1399,6 +1430,9 @@ with tab4:
                     def_shot_zones=_def_zones,
                     off_career_df=_off_career_df,
                     def_career_df=_def_career_df,
+                    off_team_record=_off_team_rec,
+                    def_team_record=_def_team_rec,
+                    h2h_record=_h2h_rec,
                 ):
                     _rpt_text += _chunk
                     _rpt_placeholder.markdown(
