@@ -267,6 +267,7 @@ def _bbref_soup(url: str) -> Optional[BeautifulSoup]:
     try:
         r = requests.get(url, headers=BBREF_HEADERS, timeout=20)
         r.raise_for_status()
+        r.encoding = "utf-8"
         # BBRef hides most tables in HTML comments — uncomment them
         html = re.sub(r"<!--(.*?)-->", r"\1", r.text, flags=re.DOTALL)
         return BeautifulSoup(html, "html.parser")
@@ -352,6 +353,250 @@ def get_bbref_team_stats(season_end_year: int) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Game box scores (Basketball Reference game pages)
+# ---------------------------------------------------------------------------
+
+_MONTH_MAP = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    # abbreviated forms
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+# BBRef team abbreviations (a few differ from NBA API)
+_BBREF_ABBR: Dict[str, str] = {
+    "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BRK",
+    "Charlotte Hornets": "CHO", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+    "Los Angeles Clippers": "LAC", "Los Angeles Lakers": "LAL", "Memphis Grizzlies": "MEM",
+    "Miami Heat": "MIA", "Milwaukee Bucks": "MIL", "Minnesota Timberwolves": "MIN",
+    "New Orleans Pelicans": "NOP", "New York Knicks": "NYK", "Oklahoma City Thunder": "OKC",
+    "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHO",
+    "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC", "San Antonio Spurs": "SAS",
+    "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS",
+}
+
+
+def _parse_game_date(date_str: str, season_end_year: int) -> Optional[str]:
+    """Convert 'April 19' or 'Apr 19' to 'YYYYMMDD' using season_end_year."""
+    parts = date_str.strip().split()
+    if len(parts) < 2:
+        return None
+    month_key = parts[0].lower().rstrip(".")
+    month_num = _MONTH_MAP.get(month_key)
+    if not month_num:
+        return None
+    try:
+        day = int(parts[1])
+    except ValueError:
+        return None
+    # Playoffs always fall in Apr-Jun of season_end_year
+    year = season_end_year
+    return f"{year}{month_num:02d}{day:02d}"
+
+
+def _get_bbref_abbr(team_name: str) -> Optional[str]:
+    """Return BBRef 3-letter abbreviation for a full team name."""
+    abbr = _BBREF_ABBR.get(team_name)
+    if abbr:
+        return abbr
+    # Fallback: match on last word (nickname)
+    nick = team_name.split()[-1] if team_name else ""
+    for name, a in _BBREF_ABBR.items():
+        if name.endswith(nick):
+            return a
+    return None
+
+
+def get_game_boxscore(
+    date_str: str,
+    home_team: str,
+    away_team: str,
+    season_end_year: int,
+) -> Optional[Dict]:
+    """
+    Scrape a BBRef game box score page.
+    Returns dict with keys: date, home, away, home_score, away_score,
+    home_players, away_players (list of player stat dicts).
+    Cached at data/cache/boxscore_{YYYYMMDD}_{HOMEABBR}.json
+    """
+    date_key = _parse_game_date(date_str, season_end_year)
+    home_abbr = _get_bbref_abbr(home_team)
+    away_abbr = _get_bbref_abbr(away_team)
+    if not date_key or not home_abbr:
+        return None
+
+    cache_path = CACHE_DIR / f"boxscore_{date_key}_{home_abbr}.json"
+    if cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    url = f"https://www.basketball-reference.com/boxscores/{date_key}0{home_abbr}.html"
+    soup = _bbref_soup(url)
+    if soup is None:
+        return None
+
+    result: Dict = {
+        "date": date_str,
+        "home": home_team,
+        "away": away_team,
+        "home_score": None,
+        "away_score": None,
+        "home_players": [],
+        "away_players": [],
+    }
+
+    def _parse_box_table(abbr: str) -> List[Dict]:
+        table = soup.find("table", id=f"box-{abbr}-game-basic")
+        if table is None:
+            return []
+        players = []
+        for row in table.find("tbody").find_all("tr"):
+            if row.get("class") and any(c in row.get("class", []) for c in ["thead", "partial_table"]):
+                continue
+            name_cell = row.find("th", {"data-stat": "player"})
+            if not name_cell:
+                continue
+            name = name_cell.get_text(strip=True)
+            if not name or name.lower() in ("reserves", "team totals"):
+                continue
+
+            def _td(stat):
+                c = row.find("td", {"data-stat": stat})
+                return c.get_text(strip=True) if c else ""
+
+            mp = _td("mp")
+            # Skip DNP rows
+            reason = _td("reason")
+            if reason or not mp or mp == "Did Not Play" or mp == "Did Not Dress":
+                continue
+            try:
+                mins = int(mp.split(":")[0]) if ":" in mp else int(mp)
+            except (ValueError, AttributeError):
+                mins = 0
+            if mins < 1:
+                continue
+
+            def _int(s):
+                try: return int(s)
+                except (ValueError, TypeError): return 0
+
+            players.append({
+                "name": name,
+                "min": mins,
+                "pts": _int(_td("pts")),
+                "reb": _int(_td("trb")),
+                "ast": _int(_td("ast")),
+                "fgm": _int(_td("fg")),
+                "fga": _int(_td("fga")),
+                "fg3m": _int(_td("fg3")),
+                "fg3a": _int(_td("fg3a")),
+                "ftm": _int(_td("ft")),
+                "fta": _int(_td("fta")),
+                "stl": _int(_td("stl")),
+                "blk": _int(_td("blk")),
+                "tov": _int(_td("tov")),
+                "plus_minus": _int(_td("plus_minus")),
+            })
+        return players
+
+    result["home_players"] = _parse_box_table(home_abbr)
+    if away_abbr:
+        result["away_players"] = _parse_box_table(away_abbr)
+
+    # Extract final scores from the scoreline
+    linescore = soup.find("table", class_="linescore")
+    if linescore:
+        rows = linescore.find_all("tr")
+        for row in rows:
+            cells = row.find_all(["td", "th"])
+            if len(cells) >= 2:
+                team_cell = cells[0].get_text(strip=True)
+                total_cell = cells[-1].get_text(strip=True)
+                try:
+                    score = int(total_cell)
+                    if away_team.split()[-1].lower() in team_cell.lower():
+                        result["away_score"] = score
+                    elif home_team.split()[-1].lower() in team_cell.lower():
+                        result["home_score"] = score
+                except (ValueError, TypeError):
+                    pass
+
+    time.sleep(BBREF_DELAY)
+
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
+
+    return result
+
+
+def fmt_boxscore(box: Dict) -> str:
+    """Format a single game box score dict into LLM-readable text."""
+    away_score = f" {box['away_score']}" if box.get("away_score") is not None else ""
+    home_score = f" {box['home_score']}" if box.get("home_score") is not None else ""
+    lines = [
+        f"{box['date']}: {box['away']}{away_score} @ {box['home']}{home_score}"
+    ]
+
+    for team_key, team_name in [("away_players", box["away"]), ("home_players", box["home"])]:
+        players = box.get(team_key, [])
+        if not players:
+            continue
+        lines.append(f"  {team_name}:")
+        for p in sorted(players, key=lambda x: x["pts"], reverse=True):
+            fg_str = f"{p['fgm']}/{p['fga']}FG"
+            fg3_str = f" {p['fg3m']}/{p['fg3a']}3P" if p["fg3a"] > 0 else ""
+            ft_str = f" {p['ftm']}/{p['fta']}FT" if p["fta"] > 0 else ""
+            pm_val = p["plus_minus"]
+            pm = f" ({'+' if pm_val > 0 else ''}{pm_val})" if pm_val != 0 else ""
+            lines.append(
+                f"    {p['name']}: {p['min']}min {p['pts']}pts {p['reb']}reb "
+                f"{p['ast']}ast {fg_str}{fg3_str}{ft_str}{pm}"
+            )
+    return "\n".join(lines)
+
+
+def get_playoff_series_boxscores(series: Dict, season_end_year: int) -> str:
+    """
+    Fetch and format full box scores for all played games in a playoff series.
+    Returns formatted string for LLM context, empty string on failure.
+    """
+    games = [g for g in series.get("games", []) if g.get("played")]
+    if not games:
+        return ""
+
+    parts = [
+        f"=== {series['team1'].upper()} vs {series['team2'].upper()} — "
+        f"{series['round_name'].upper()} GAME-BY-GAME BOX SCORES ==="
+    ]
+
+    for i, g in enumerate(games, 1):
+        box = get_game_boxscore(
+            g["date"], g["home"], g["away"], season_end_year
+        )
+        if box:
+            parts.append(f"\nGame {i} — {fmt_boxscore(box)}")
+        else:
+            # Fallback: just the score line we already have
+            parts.append(
+                f"\nGame {i} — {g['date']}: {g['away']} {g.get('away_score','')} "
+                f"@ {g['home']} {g.get('home_score','')}"
+            )
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

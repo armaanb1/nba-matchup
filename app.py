@@ -31,6 +31,7 @@ from bbref_loader import (
     get_bbref_team_stats,
     get_bbref_playoff_bracket,
     fmt_playoff_context,
+    get_playoff_series_boxscores,
 )
 from nba_api.stats.static import players as _nba_players_static
 from nba_api.stats.static import teams as _nba_teams_static
@@ -1682,11 +1683,10 @@ with tab4:
                                         _concept_lines.append(fmt_player_compact(_cp, _career_cache.get(_cp.player_id)))
                                 _career_parts.append("\n".join(_concept_lines))
 
-                    # Playoff bracket — inject when playoffs concept or teams detected
+                    # Playoff bracket + game box scores
                     if "playoffs" in _detected_concepts or _detected_teams:
                         _bracket = st.session_state.get("playoff_bracket_list")
                         if not _bracket:
-                            # Fetch inline if not loaded yet
                             try:
                                 _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
                                 _bracket = get_bbref_playoff_bracket(_season_end_yr)
@@ -1701,6 +1701,22 @@ with tab4:
                             )
                             if _bracket_ctx:
                                 _career_parts.append(_bracket_ctx)
+
+                            # Full box scores for series involving detected teams
+                            if _detected_teams:
+                                _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+                                for _s in _bracket:
+                                    t1, t2 = _s["team1"].lower(), _s["team2"].lower()
+                                    if any(
+                                        ft.lower() in t1 or ft.lower() in t2
+                                        for ft in _detected_teams
+                                    ) and _s.get("games"):
+                                        try:
+                                            _box_ctx = get_playoff_series_boxscores(_s, _season_end_yr)
+                                            if _box_ctx:
+                                                _career_parts.append(_box_ctx)
+                                        except Exception:
+                                            pass
 
                 _career_context = ""
                 if _career_parts:
