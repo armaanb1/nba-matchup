@@ -42,6 +42,7 @@ try:
         get_current_season_logs,
         get_playoff_logs,
         fmt_game_log_context,
+        prefetch_player_logs,
     )
     _BBREF_AVAILABLE = True
 except ImportError:
@@ -533,8 +534,8 @@ def _do_load_team_data(season_end_year: int, force: bool = False) -> bool:
     Returns True on success."""
     import datetime
     try:
-        tdf = get_bbref_team_stats(season_end_year)
-        bracket = get_bbref_playoff_bracket(season_end_year)
+        tdf = get_bbref_team_stats(season_end_year, force=force)
+        bracket = get_bbref_playoff_bracket(season_end_year, force=force)
         if not tdf.empty:
             tdf["FULL_NAME"] = tdf["TEAM_NAME"]
             tdf["TeamName"] = tdf["TEAM_NAME"]
@@ -647,7 +648,18 @@ with st.sidebar:
         with st.spinner("Refreshing team stats and bracket…"):
             _season_end_enrich = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
             _do_load_team_data(_season_end_enrich)
-        st.success("Player and team data refreshed!")
+        if _BBREF_AVAILABLE and st.session_state.graph:
+            _all_names = list({p.name for p in st.session_state.graph.players.values()})
+            prog_bar2 = st.progress(0, text="Pre-fetching game logs…")
+            for _li, _lname in enumerate(_all_names):
+                prog_bar2.progress((_li + 1) / max(len(_all_names), 1), text=f"Fetching logs: {_lname}")
+                try:
+                    get_current_season_logs(_lname, _season_end_enrich)
+                    get_playoff_logs(_lname, _season_end_enrich)
+                except Exception:
+                    pass
+            prog_bar2.empty()
+        st.success("Player, team, and game log data refreshed!")
 
     # Graph summary in sidebar
     if st.session_state.data_loaded and st.session_state.graph:
@@ -1708,6 +1720,20 @@ with tab4:
                         if len(_team_lines) > 1:
                             _career_parts.append("\n".join(_team_lines))
 
+                        # Game logs for roster players — served from cache only
+                        # (pre-fetched by Load Data / Refresh; never hits BBRef live here)
+                        if _BBREF_AVAILABLE:
+                            for _tp in _team_players:
+                                if _tp.player_id not in _named_players:
+                                    try:
+                                        _tp_plogs = get_playoff_logs(_tp.name, _season_end, cache_only=True)
+                                        _tp_rlogs = get_current_season_logs(_tp.name, _season_end, cache_only=True)
+                                        _tp_log_ctx = fmt_game_log_context(_tp.name, _tp_rlogs, _tp_plogs)
+                                        if _tp_log_ctx:
+                                            _career_parts.append(_tp_log_ctx)
+                                    except Exception:
+                                        pass
+
                     # Concept pools — enriched stats + improvement delta (compact)
                     _career_cache = {}
                     if _detected_concepts and graph:
@@ -1745,7 +1771,7 @@ with tab4:
                             except Exception:
                                 _bracket = []
 
-                        _bracket_covered_teams: List[str] = []
+                        _bracket_covered_teams = []
 
                         if _bracket:
                             _bracket_ctx = fmt_playoff_context(
@@ -1853,7 +1879,7 @@ with tab4:
                 unsafe_allow_html=True,
             )
         else:
-            _tdf_llm = st.session_state.get("team_stats_df", pd.DataFrame())
+            _tdf_llm = st.session_state.get("team_stats_df") or pd.DataFrame()
             _team_name_col_llm = next(
                 (c for c in ["TEAM_NAME", "Team", "TeamName"] if c in _tdf_llm.columns), None
             )
@@ -2570,16 +2596,16 @@ with tab6:
         if st.session_state.team_stats_df is not None:
             st.success("Team data refreshed.")
 
-    if not st.session_state.team_data_loaded or st.session_state.team_stats_df is None:
+    _tdf = st.session_state.get("team_stats_df") or pd.DataFrame()
+    if _tdf.empty:
         st.markdown(
-            '<div class="info-box">Team data loads automatically when you click '
-            '<b>⬇ Load Data</b> in the sidebar.</div>',
+            '<div class="info-box">Team stats unavailable — click <b>🔄 Refresh</b> above '
+            'or <b>⬇ Load Data</b> in the sidebar.</div>',
             unsafe_allow_html=True,
         )
     else:
 
-        _tdf = st.session_state.team_stats_df
-        _sdf = st.session_state.standings_df
+        _sdf = st.session_state.get("standings_df") or pd.DataFrame()
 
         # Resolve team name column — live API uses TEAM_NAME
         _team_name_col = "TEAM_NAME" if "TEAM_NAME" in _tdf.columns else _tdf.columns[1]

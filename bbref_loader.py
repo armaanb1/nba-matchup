@@ -108,13 +108,45 @@ def _parse_game_logs(raw: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def get_current_season_logs(player_name: str, season_end_year: int) -> pd.DataFrame:
+def _log_cache_path(player_identifier: str, season_end_year: int, log_type: str) -> Path:
+    return CACHE_DIR / f"gamelogs_{log_type}_{player_identifier}_{season_end_year}.json"
+
+
+def _save_log_cache(path: Path, df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(df.to_dict(orient="records"), f, default=str)
+    except Exception:
+        pass
+
+
+def _load_log_cache(path: Path) -> pd.DataFrame:
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_current_season_logs(
+    player_name: str, season_end_year: int, cache_only: bool = False
+) -> pd.DataFrame:
     """
-    Fetch regular season game logs. Always fresh — no caching.
+    Fetch regular season game logs. Cached to disk permanently.
+    cache_only=True: return from cache or empty — never hits BBRef.
     season_end_year: 2026 for the 2025-26 season.
     """
     identifier = get_bbref_identifier(player_name)
     if not identifier:
+        return pd.DataFrame()
+    cache_path = _log_cache_path(identifier, season_end_year, "regular")
+    if cache_path.exists():
+        return _load_log_cache(cache_path)
+    if cache_only:
         return pd.DataFrame()
     try:
         from basketball_reference_web_scraper import client
@@ -123,18 +155,28 @@ def get_current_season_logs(player_name: str, season_end_year: int) -> pd.DataFr
             season_end_year=season_end_year,
         )
         time.sleep(BBREF_DELAY)
-        return _parse_game_logs(raw)
+        df = _parse_game_logs(raw)
+        _save_log_cache(cache_path, df)
+        return df
     except Exception:
         return pd.DataFrame()
 
 
-def get_playoff_logs(player_name: str, season_end_year: int) -> pd.DataFrame:
+def get_playoff_logs(
+    player_name: str, season_end_year: int, cache_only: bool = False
+) -> pd.DataFrame:
     """
-    Fetch playoff game logs. Always fresh — no caching.
+    Fetch playoff game logs. Cached to disk permanently.
+    cache_only=True: return from cache or empty — never hits BBRef.
     season_end_year: 2026 for the 2025-26 playoffs.
     """
     identifier = get_bbref_identifier(player_name)
     if not identifier:
+        return pd.DataFrame()
+    cache_path = _log_cache_path(identifier, season_end_year, "playoff")
+    if cache_path.exists():
+        return _load_log_cache(cache_path)
+    if cache_only:
         return pd.DataFrame()
     try:
         from basketball_reference_web_scraper import client
@@ -143,9 +185,30 @@ def get_playoff_logs(player_name: str, season_end_year: int) -> pd.DataFrame:
             season_end_year=season_end_year,
         )
         time.sleep(BBREF_DELAY)
-        return _parse_game_logs(raw)
+        df = _parse_game_logs(raw)
+        _save_log_cache(cache_path, df)
+        return df
     except Exception:
         return pd.DataFrame()
+
+
+def prefetch_player_logs(player_names: List[str], season_end_year: int) -> int:
+    """Pre-fetch and cache regular-season and playoff logs for a list of players.
+    Skips players whose cache files already exist. Returns count newly fetched."""
+    count = 0
+    for name in player_names:
+        identifier = get_bbref_identifier(name)
+        if not identifier:
+            continue
+        for log_type, fetch_fn in [
+            ("regular", lambda i: get_current_season_logs(name, season_end_year)),
+            ("playoff", lambda i: get_playoff_logs(name, season_end_year)),
+        ]:
+            path = _log_cache_path(identifier, season_end_year, log_type)
+            if not path.exists():
+                fetch_fn(identifier)
+                count += 1
+    return count
 
 
 def fmt_game_log_context(
@@ -275,14 +338,38 @@ def _bbref_soup(url: str) -> Optional[BeautifulSoup]:
         return None
 
 
-def get_bbref_team_stats(season_end_year: int) -> pd.DataFrame:
+_TEAM_STATS_TTL = 4 * 3600   # re-fetch at most every 4 hours
+_BRACKET_TTL    = 30 * 60    # re-fetch at most every 30 minutes
+
+
+def _team_stats_cache_path(season_end_year: int) -> Path:
+    return CACHE_DIR / f"team_stats_{season_end_year}.json"
+
+
+def _bracket_cache_path(season_end_year: int) -> Path:
+    return CACHE_DIR / f"playoff_bracket_{season_end_year}.json"
+
+
+def get_bbref_team_stats(season_end_year: int, force: bool = False) -> pd.DataFrame:
     """
     Scrape team advanced stats from Basketball Reference.
     Returns DataFrame with columns matching the existing app expectations:
     TEAM_NAME, OFF_RATING, DEF_RATING, NET_RATING, PACE, EFG_PCT,
     TM_TOV_PCT, OREB_PCT, TS_PCT, WINS, LOSSES, W, L, WinPct, Conference
-    Always fresh — no caching.
+    Cached to disk for up to 4 hours; pass force=True to bypass.
     """
+    import time as _time
+    cache_path = _team_stats_cache_path(season_end_year)
+    if not force and cache_path.exists():
+        try:
+            if _time.time() - cache_path.stat().st_mtime < _TEAM_STATS_TTL:
+                with open(cache_path) as f:
+                    cached = json.load(f)
+                if cached.get("season_end_year") == season_end_year and cached.get("rows"):
+                    return pd.DataFrame(cached["rows"])
+        except Exception:
+            pass
+
     soup = _bbref_soup(f"https://www.basketball-reference.com/leagues/NBA_{season_end_year}.html")
     if soup is None:
         return pd.DataFrame()
@@ -352,7 +439,15 @@ def get_bbref_team_stats(season_end_year: int) -> pd.DataFrame:
             "PlayoffRank": seed_map.get(name, 99),
         })
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump({"season_end_year": season_end_year, "rows": rows}, f)
+        except Exception:
+            pass
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -640,16 +735,29 @@ _ROUND_ORDER = {
 }
 
 
-def get_bbref_playoff_bracket(season_end_year: int) -> List[Dict]:
+def get_bbref_playoff_bracket(season_end_year: int, force: bool = False) -> List[Dict]:
     """
     Scrape the live playoff bracket from Basketball Reference.
-    Returns a list of series dicts, always fresh:
+    Cached to disk for up to 30 minutes; pass force=True to bypass.
+    Returns a list of series dicts:
       round_name, round_num, conf, team1, team2,
       wins1, wins2, status ('completed'|'in_progress'|'upcoming'),
       leader (team currently leading or winner),
       games (list of {date, away, home, away_score, home_score, played})
     Ordered most-recent round first.
     """
+    import time as _time
+    cache_path = _bracket_cache_path(season_end_year)
+    if not force and cache_path.exists():
+        try:
+            if _time.time() - cache_path.stat().st_mtime < _BRACKET_TTL:
+                with open(cache_path) as f:
+                    cached = json.load(f)
+                if cached.get("season_end_year") == season_end_year and cached.get("bracket"):
+                    return cached["bracket"]
+        except Exception:
+            pass
+
     soup = _bbref_soup(
         f"https://www.basketball-reference.com/playoffs/NBA_{season_end_year}.html"
     )
@@ -789,6 +897,13 @@ def get_bbref_playoff_bracket(season_end_year: int) -> List[Dict]:
     # Sort: in-progress first, then upcoming, then completed; within each by round desc
     order = {"in_progress": 0, "upcoming": 1, "completed": 2}
     series_list.sort(key=lambda s: (order[s["status"]], -s["round_num"]))
+    if series_list:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump({"season_end_year": season_end_year, "bracket": series_list}, f)
+        except Exception:
+            pass
     return series_list
 
 
