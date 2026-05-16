@@ -691,11 +691,12 @@ def generate_playoff_matchup_keys(
     team2_name: str,
     team1_stats: Dict,
     team2_stats: Dict,
-    seed1: int,
-    seed2: int,
-    series_prob: float,
     graph_obj: MatchupGraph,
     api_key: str,
+    seed1: int = 0,
+    seed2: int = 0,
+    series_prob: float = 0.5,
+    series_game_context: str = "",
     roster_t1: Optional[List[str]] = None,
     roster_t2: Optional[List[str]] = None,
 ) -> str:
@@ -708,35 +709,44 @@ def generate_playoff_matchup_keys(
         if roster_t2:
             _roster_section += f"{team2_name}: {', '.join(roster_t2)}\n"
 
-    context = f"""
-=== PLAYOFF MATCHUP ===
-#{seed1} {team1_name} vs #{seed2} {team2_name}
-Projected series win probability: {team1_name} {series_prob:.0%} / {team2_name} {1-series_prob:.0%}
+    seed_str1 = f"#{seed1} " if seed1 else ""
+    seed_str2 = f"#{seed2} " if seed2 else ""
 
-=== {team1_name.upper()} TEAM STATS ===
-{_fmt_team_stats(team1_name, team1_stats)}
+    context_parts = [
+        f"=== PLAYOFF MATCHUP ===",
+        f"{seed_str1}{team1_name} vs {seed_str2}{team2_name}",
+        f"Projected series win probability: {team1_name} {series_prob:.0%} / {team2_name} {1-series_prob:.0%}",
+        f"\n=== {team1_name.upper()} TEAM STATS ===",
+        _fmt_team_stats(team1_name, team1_stats),
+        f"\n=== {team2_name.upper()} TEAM STATS ===",
+        _fmt_team_stats(team2_name, team2_stats),
+    ]
+    if series_game_context:
+        context_parts.append(f"\n=== SERIES GAME LOG (use this — do not invent game references) ===")
+        context_parts.append(series_game_context)
+    if _roster_section:
+        context_parts.append(_roster_section)
+    context_parts.append(f"\n=== KEY PLAYER MATCHUPS (from season matchup graph) ===")
+    context_parts.append(_fmt_cross_team_matchups(team1_name, team2_name, graph_obj))
 
-=== {team2_name.upper()} TEAM STATS ===
-{_fmt_team_stats(team2_name, team2_stats)}
-{_roster_section}
-=== KEY PLAYER MATCHUPS (from season matchup graph) ===
-{_fmt_cross_team_matchups(team1_name, team2_name, graph_obj)}
-""".strip()
+    context = "\n".join(context_parts)
 
-    roster_instruction = (
-        " Only reference players who appear in the provided rosters — do not mention any player "
-        "not listed there."
-        if (roster_t1 or roster_t2) else ""
+    series_label = f"{seed_str1}{team1_name} vs {seed_str2}{team2_name}"
+    game_log_instruction = (
+        " All game references must come from the SERIES GAME LOG section above — "
+        "do not invent scores, game numbers, or player performances."
+        if series_game_context else ""
     )
 
     prompt = (
-        f"Write a 'Keys to the Series' breakdown for #{seed1} {team1_name} vs #{seed2} {team2_name}. "
-        f"Identify 3-4 keys. For each one: state the specific tactical decision that must be made, "
+        f"Write a 'Keys to the Series' breakdown for {series_label}. "
+        f"Identify 3 keys for each team (3 for {team1_name}, 3 for {team2_name}). "
+        f"For each key: state the specific tactical decision that must be made, "
         f"explain WHY it matters physically or schematically — not just what the number says — "
         f"and give a concrete scheme action to address it. "
         f"Name the play type, the coverage scheme, or the rotation — not 'exploit the mismatch'. "
-        f"Do not list stats. Make an argument about what decides this series.{roster_instruction} "
-        f"Keep it under 350 words.\n\n{context}"
+        f"Ground every argument in what has actually happened in this series so far.{game_log_instruction} "
+        f"Keep it under 500 words.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
 

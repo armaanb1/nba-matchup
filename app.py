@@ -2851,11 +2851,34 @@ with tab6:
                                     _t2r = _tdf[_tdf["TEAM_NAME"].str.lower() == _s["team2"].lower()]
                                     _t1_stats = _t1r.iloc[0].to_dict() if not _t1r.empty else {}
                                     _t2_stats = _t2r.iloc[0].to_dict() if not _t2r.empty else {}
+                                    _seed1 = int(_t1_stats.get("PlayoffRank", 0))
+                                    _seed2 = int(_t2_stats.get("PlayoffRank", 0))
+                                    _nr1_k = _net_rating(_s["team1"])
+                                    _nr2_k = _net_rating(_s["team2"])
+                                    if _nr1_k is not None and _nr2_k is not None:
+                                        _pg_k = 1 / (1 + math.exp(-((_nr1_k - _nr2_k) / 7)))
+                                        _sp_k = _series_prob(_pg_k)
+                                    else:
+                                        _sp_k = 0.5
+                                    _season_end_yr_k = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+                                    _series_ctx = ""
+                                    try:
+                                        if _s.get("games"):
+                                            _series_ctx = get_playoff_series_boxscores(_s, _season_end_yr_k)
+                                        if not _series_ctx:
+                                            _series_ctx = get_cached_series_boxscores_for_teams(
+                                                [_s["team1"].split()[-1], _s["team2"].split()[-1]]
+                                            )
+                                    except Exception:
+                                        _series_ctx = ""
                                     with st.spinner("Generating keys to the series..."):
                                         _keys_report = generate_playoff_matchup_keys(
                                             _s["team1"], _s["team2"],
                                             _t1_stats, _t2_stats,
                                             graph, st.session_state.api_key,
+                                            seed1=_seed1, seed2=_seed2,
+                                            series_prob=_sp_k,
+                                            series_game_context=_series_ctx,
                                         )
                                     if _keys_report:
                                         st.markdown(f'<div class="report-box">{_keys_report}</div>', unsafe_allow_html=True)
