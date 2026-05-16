@@ -748,7 +748,7 @@ def generate_playoff_matchup_keys(
         f"Ground every argument in what has actually happened in this series so far.{game_log_instruction} "
         f"Each key should be 3-4 sentences. Complete all 6 keys before stopping.\n\n{context}"
     )
-    return _call_anthropic(prompt, api_key, max_tokens=2048)
+    return _call_anthropic(prompt, api_key)
 
 
 def _fmt_team_stats(team_name: str, stats: Dict) -> str:
@@ -897,7 +897,7 @@ ANALYST_SYSTEM_PROMPT = (
 )
 
 
-def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[str] = None, max_tokens: int = 1024) -> str:
+def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[str] = None, max_tokens: int = 2048) -> str:
     system = system_override if system_override else SYSTEM_PROMPT
     try:
         client = anthropic.Anthropic(api_key=api_key)
@@ -934,7 +934,7 @@ def stream_report(user_prompt: str, api_key: str):
         client = anthropic.Anthropic(api_key=api_key)
         with client.messages.stream(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=2048,
             system=[{
                 "type": "text",
                 "text": _sanitize(SYSTEM_PROMPT),
