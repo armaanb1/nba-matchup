@@ -436,7 +436,13 @@ def get_game_boxscore(
     if cache_path.exists():
         try:
             with open(cache_path) as f:
-                return json.load(f)
+                data = json.load(f)
+            # Derive scores from player totals when linescore was missing at scrape time
+            if data.get("home_score") is None and data.get("home_players"):
+                data["home_score"] = sum(p["pts"] for p in data["home_players"])
+            if data.get("away_score") is None and data.get("away_players"):
+                data["away_score"] = sum(p["pts"] for p in data["away_players"])
+            return data
         except Exception:
             pass
 
@@ -513,23 +519,31 @@ def get_game_boxscore(
     if away_abbr:
         result["away_players"] = _parse_box_table(away_abbr)
 
-    # Extract final scores from the scoreline
+    # Extract final scores from the scoreline — match by nickname, abbreviation, or city
     linescore = soup.find("table", class_="linescore")
     if linescore:
         rows = linescore.find_all("tr")
         for row in rows:
             cells = row.find_all(["td", "th"])
             if len(cells) >= 2:
-                team_cell = cells[0].get_text(strip=True)
+                team_cell = cells[0].get_text(strip=True).lower()
                 total_cell = cells[-1].get_text(strip=True)
                 try:
                     score = int(total_cell)
-                    if away_team.split()[-1].lower() in team_cell.lower():
+                    away_tokens = [t.lower() for t in away_team.split()] + ([away_abbr.lower()] if away_abbr else [])
+                    home_tokens = [t.lower() for t in home_team.split()] + ([home_abbr.lower()] if home_abbr else [])
+                    if any(tok in team_cell for tok in away_tokens):
                         result["away_score"] = score
-                    elif home_team.split()[-1].lower() in team_cell.lower():
+                    elif any(tok in team_cell for tok in home_tokens):
                         result["home_score"] = score
                 except (ValueError, TypeError):
                     pass
+
+    # Derive scores from player point totals when linescore parsing fails
+    if result["home_score"] is None and result["home_players"]:
+        result["home_score"] = sum(p["pts"] for p in result["home_players"])
+    if result["away_score"] is None and result["away_players"]:
+        result["away_score"] = sum(p["pts"] for p in result["away_players"])
 
     time.sleep(BBREF_DELAY)
 
@@ -545,10 +559,17 @@ def get_game_boxscore(
 
 def fmt_boxscore(box: Dict) -> str:
     """Format a single game box score dict into LLM-readable text."""
-    away_score = f" {box['away_score']}" if box.get("away_score") is not None else ""
-    home_score = f" {box['home_score']}" if box.get("home_score") is not None else ""
+    as_ = box.get("away_score")
+    hs_ = box.get("home_score")
+    away_score = f" {as_}" if as_ is not None else ""
+    home_score = f" {hs_}" if hs_ is not None else ""
+    if as_ is not None and hs_ is not None:
+        winner = box["away"] if as_ > hs_ else box["home"]
+        result_tag = f" — {winner.split()[-1].upper()} WIN"
+    else:
+        result_tag = ""
     lines = [
-        f"{box['date']}: {box['away']}{away_score} @ {box['home']}{home_score}"
+        f"{box['date']}: {box['away']}{away_score} @ {box['home']}{home_score}{result_tag}"
     ]
 
     for team_key, team_name in [("away_players", box["away"]), ("home_players", box["home"])]:
@@ -771,6 +792,92 @@ def get_bbref_playoff_bracket(season_end_year: int) -> List[Dict]:
     return series_list
 
 
+def prefetch_playoff_boxscores(bracket: List[Dict], season_end_year: int) -> int:
+    """
+    Pre-fetch and cache box scores for every played game in the bracket.
+    Skips games already in cache. Returns count of newly fetched games.
+    """
+    count = 0
+    for series in bracket:
+        for g in series.get("games", []):
+            if not g.get("played") or not _is_clean_game(g):
+                continue
+            date_key = _parse_game_date(g["date"], season_end_year)
+            home_abbr = _get_bbref_abbr(g["home"])
+            if not date_key or not home_abbr:
+                continue
+            cache_path = CACHE_DIR / f"boxscore_{date_key}_{home_abbr}.json"
+            if not cache_path.exists():
+                get_game_boxscore(g["date"], g["home"], g["away"], season_end_year)
+                count += 1
+    return count
+
+
+def get_cached_series_boxscores_for_teams(
+    team_names: List[str],
+    round_name: str = "Conference Semifinals",
+) -> str:
+    """
+    Scan cached boxscore files for games between the specified teams.
+    Used as fallback when the live bracket scraper hasn't yet indexed a new series.
+    Returns a formatted string matching get_playoff_series_boxscores output.
+    """
+    if len(team_names) < 2:
+        return ""
+
+    matched_games: List[Dict] = []
+    for cache_file in sorted(CACHE_DIR.glob("boxscore_*.json")):
+        try:
+            with open(cache_file) as f:
+                box = json.load(f)
+        except Exception:
+            continue
+        home = box.get("home", "")
+        away = box.get("away", "")
+        home_match = any(t.lower() in home.lower() for t in team_names)
+        away_match = any(t.lower() in away.lower() for t in team_names)
+        if not (home_match and away_match):
+            continue
+        # Derive scores from player totals if missing
+        if box.get("home_score") is None and box.get("home_players"):
+            box["home_score"] = sum(p["pts"] for p in box["home_players"])
+        if box.get("away_score") is None and box.get("away_players"):
+            box["away_score"] = sum(p["pts"] for p in box["away_players"])
+        matched_games.append(box)
+
+    if not matched_games:
+        return ""
+
+    # Identify the two teams
+    all_teams = {g["home"] for g in matched_games} | {g["away"] for g in matched_games}
+    team1, team2 = sorted(all_teams)[:2]
+
+    # Count series wins
+    wins: Dict[str, int] = {t: 0 for t in all_teams}
+    for g in matched_games:
+        hs = g.get("home_score") or 0
+        as_ = g.get("away_score") or 0
+        winner = g["home"] if hs > as_ else g["away"]
+        wins[winner] = wins.get(winner, 0) + 1
+
+    w1, w2 = wins.get(team1, 0), wins.get(team2, 0)
+    if w1 > w2:
+        series_status = f"{team1} lead {w1}-{w2}"
+    elif w2 > w1:
+        series_status = f"{team2} lead {w2}-{w1}"
+    else:
+        series_status = f"Tied {w1}-{w2}"
+
+    parts = [
+        f"=== {team1.upper()} vs {team2.upper()} — {round_name.upper()} BOX SCORES ===",
+        f"Series: {series_status}",
+    ]
+    for i, box in enumerate(matched_games, 1):
+        parts.append(f"\nGame {i} — {fmt_boxscore(box)}")
+
+    return "\n".join(parts)
+
+
 def fmt_playoff_context(
     bracket: List[Dict],
     filter_teams: Optional[List[str]] = None,
@@ -819,9 +926,16 @@ def fmt_playoff_context(
                 if not _is_clean_game(g):
                     continue
                 if g.get("played"):
+                    as_ = g.get("away_score")
+                    hs_ = g.get("home_score")
+                    if as_ is not None and hs_ is not None:
+                        winner = g["away"] if as_ > hs_ else g["home"]
+                        win_tag = f" ({winner.split()[-1].upper()} WIN)"
+                    else:
+                        win_tag = ""
                     lines.append(
-                        f"    {g['date']}: {g['away']} {g['away_score']} @ "
-                        f"{g['home']} {g['home_score']}"
+                        f"    {g['date']}: {g['away']} {as_} @ "
+                        f"{g['home']} {hs_}{win_tag}"
                     )
                 else:
                     lines.append(f"    {g['date']}: {g['away']} @ {g['home']} (scheduled)")

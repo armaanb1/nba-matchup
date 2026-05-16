@@ -32,6 +32,8 @@ from bbref_loader import (
     get_bbref_playoff_bracket,
     fmt_playoff_context,
     get_playoff_series_boxscores,
+    get_cached_series_boxscores_for_teams,
+    prefetch_playoff_boxscores,
 )
 from nba_api.stats.static import players as _nba_players_static
 from nba_api.stats.static import teams as _nba_teams_static
@@ -1683,17 +1685,17 @@ with tab4:
                                         _concept_lines.append(fmt_player_compact(_cp, _career_cache.get(_cp.player_id)))
                                 _career_parts.append("\n".join(_concept_lines))
 
-                    # Playoff bracket + game box scores
+                    # Playoff bracket + game box scores — always fetch fresh from BBRef
                     if "playoffs" in _detected_concepts or _detected_teams:
-                        _bracket = st.session_state.get("playoff_bracket_list")
-                        if not _bracket:
-                            try:
-                                _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
-                                _bracket = get_bbref_playoff_bracket(_season_end_yr)
-                                if _bracket:
-                                    st.session_state.playoff_bracket_list = _bracket
-                            except Exception:
-                                _bracket = []
+                        _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+                        try:
+                            _bracket = get_bbref_playoff_bracket(_season_end_yr)
+                            if _bracket:
+                                st.session_state.playoff_bracket_list = _bracket
+                            else:
+                                _bracket = st.session_state.get("playoff_bracket_list", [])
+                        except Exception:
+                            _bracket = st.session_state.get("playoff_bracket_list", [])
                         if _bracket:
                             _bracket_ctx = fmt_playoff_context(
                                 _bracket,
@@ -1704,7 +1706,7 @@ with tab4:
 
                             # Full box scores for series involving detected teams
                             if _detected_teams:
-                                _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+                                _bracket_covered_teams: List[str] = []
                                 for _s in _bracket:
                                     t1, t2 = _s["team1"].lower(), _s["team2"].lower()
                                     if any(
@@ -1715,6 +1717,24 @@ with tab4:
                                             _box_ctx = get_playoff_series_boxscores(_s, _season_end_yr)
                                             if _box_ctx:
                                                 _career_parts.append(_box_ctx)
+                                                _bracket_covered_teams.extend([t1, t2])
+                                        except Exception:
+                                            pass
+
+                                # Fallback: look for cached games not yet in bracket
+                                # (handles in-progress series the scraper hasn't indexed yet)
+                                if len(_detected_teams) >= 2:
+                                    _already_covered = all(
+                                        any(ft.lower() in ct for ct in _bracket_covered_teams)
+                                        for ft in _detected_teams[:2]
+                                    )
+                                    if not _already_covered:
+                                        try:
+                                            _cache_ctx = get_cached_series_boxscores_for_teams(
+                                                _detected_teams[:2]
+                                            )
+                                            if _cache_ctx:
+                                                _career_parts.append(_cache_ctx)
                                         except Exception:
                                             pass
 
@@ -2522,6 +2542,10 @@ with tab6:
 
         if force:
             st.session_state.roster_cache = {}
+
+        # Auto-fetch and cache box scores for every played game in the bracket
+        if bracket:
+            prefetch_playoff_boxscores(bracket, _season_end)
 
         return []
 
