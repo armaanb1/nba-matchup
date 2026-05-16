@@ -740,15 +740,15 @@ def generate_playoff_matchup_keys(
 
     prompt = (
         f"Write a 'Keys to the Series' breakdown for {series_label}. "
-        f"Identify 3 keys for each team (3 for {team1_name}, 3 for {team2_name}). "
+        f"Identify exactly 3 keys for each team — write {team1_name} first, then {team2_name}. "
         f"For each key: state the specific tactical decision that must be made, "
         f"explain WHY it matters physically or schematically — not just what the number says — "
         f"and give a concrete scheme action to address it. "
         f"Name the play type, the coverage scheme, or the rotation — not 'exploit the mismatch'. "
         f"Ground every argument in what has actually happened in this series so far.{game_log_instruction} "
-        f"Keep it under 500 words.\n\n{context}"
+        f"Each key should be 3-4 sentences. Complete all 6 keys before stopping.\n\n{context}"
     )
-    return _call_anthropic(prompt, api_key)
+    return _call_anthropic(prompt, api_key, max_tokens=2048)
 
 
 def _fmt_team_stats(team_name: str, stats: Dict) -> str:
@@ -897,13 +897,13 @@ ANALYST_SYSTEM_PROMPT = (
 )
 
 
-def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[str] = None) -> str:
+def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[str] = None, max_tokens: int = 1024) -> str:
     system = system_override if system_override else SYSTEM_PROMPT
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=max_tokens,
             system=[{
                 "type": "text",
                 "text": _sanitize(system),
