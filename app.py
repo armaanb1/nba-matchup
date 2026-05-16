@@ -525,6 +525,35 @@ def _render_cp_flag(player_id: int, player_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Team data loader — defined here so sidebar and tab can both call it
+# ---------------------------------------------------------------------------
+
+def _do_load_team_data(season_end_year: int, force: bool = False) -> bool:
+    """Fetch team stats, standings, and playoff bracket from BBRef and cache boxscores.
+    Returns True on success."""
+    import datetime
+    try:
+        tdf = get_bbref_team_stats(season_end_year)
+        bracket = get_bbref_playoff_bracket(season_end_year)
+        if not tdf.empty:
+            tdf["FULL_NAME"] = tdf["TEAM_NAME"]
+            tdf["TeamName"] = tdf["TEAM_NAME"]
+        st.session_state.team_stats_df = tdf if not tdf.empty else None
+        st.session_state.standings_df = tdf if not tdf.empty else None
+        st.session_state.playoff_bracket_list = bracket
+        st.session_state.playoff_series_df = None
+        st.session_state.team_data_loaded = True
+        st.session_state.team_data_updated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if force:
+            st.session_state.roster_cache = {}
+        if bracket:
+            prefetch_playoff_boxscores(bracket, season_end_year)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
@@ -590,6 +619,10 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Load failed: {e}")
 
+        with st.spinner("Fetching team stats and playoff bracket…"):
+            _season_end_load = int(season.split("-")[0]) + 1
+            _do_load_team_data(_season_end_load)
+
     # Refresh player data
     if enrich_btn and st.session_state.graph:
         prog_bar = st.progress(0, text="Refreshing players…")
@@ -607,10 +640,14 @@ with st.sidebar:
                 st.session_state.enriched = True
                 graph = st.session_state.graph
                 prog_bar.empty()
-                st.success("Player data refreshed!")
             except Exception as e:
                 prog_bar.empty()
                 st.error(f"Refresh error: {e}")
+
+        with st.spinner("Refreshing team stats and bracket…"):
+            _season_end_enrich = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+            _do_load_team_data(_season_end_enrich)
+        st.success("Player and team data refreshed!")
 
     # Graph summary in sidebar
     if st.session_state.data_loaded and st.session_state.graph:
@@ -2501,70 +2538,29 @@ with tab6:
     st.markdown('<div class="section-header">Team Matchup</div>', unsafe_allow_html=True)
     st.markdown("Compare any two NBA teams head-to-head using advanced team stats and standings.")
 
-    # ---- Load / Refresh buttons ----
-    _btn_col1, _btn_col2, _updated_col = st.columns([1, 1, 4])
+    # ---- Refresh button (team data now loads automatically with Load Data) ----
+    _btn_col1, _updated_col = st.columns([1, 5])
     with _btn_col1:
-        load_team_btn = st.button(
-            "📥 Load Team Data", type="primary",
-            help="Fetch live team stats, standings, and playoff bracket from NBA.com",
-        )
-    with _btn_col2:
         refresh_team_btn = st.button(
             "🔄 Refresh",
-            help="Clear cache and re-fetch all live team data",
+            help="Re-fetch team stats, standings, and playoff bracket from Basketball Reference",
             disabled=not st.session_state.team_data_loaded,
         )
     with _updated_col:
         if st.session_state.get("team_data_updated_at"):
             st.caption(f"Last updated: {st.session_state.team_data_updated_at}")
 
-    def _load_all_team_data(force: bool = False):
-        import datetime
-        _season = st.session_state.season
-        _season_end = int(_season.split("-")[0]) + 1
-
-        tdf = get_bbref_team_stats(_season_end)
-        bracket = get_bbref_playoff_bracket(_season_end)
-
-        # BBRef team stats doubles as standings (has Conference, PlayoffRank, W, L)
-        # Add FULL_NAME alias so existing column-detection code still works
-        if not tdf.empty:
-            tdf["FULL_NAME"] = tdf["TEAM_NAME"]
-            tdf["TeamName"] = tdf["TEAM_NAME"]
-
-        st.session_state.team_stats_df = tdf if not tdf.empty else None
-        st.session_state.standings_df = tdf if not tdf.empty else None
-        st.session_state.playoff_bracket_list = bracket
-        # Keep playoff_series_df as None — no longer used
-        st.session_state.playoff_series_df = None
-        st.session_state.team_data_loaded = True
-        st.session_state.team_data_updated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        if force:
-            st.session_state.roster_cache = {}
-
-        # Auto-fetch and cache box scores for every played game in the bracket
-        if bracket:
-            prefetch_playoff_boxscores(bracket, _season_end)
-
-        return []
-
-    if load_team_btn:
-        with st.spinner("Fetching live team stats and playoff bracket from Basketball Reference..."):
-            _load_all_team_data(force=False)
-        if st.session_state.team_stats_df is not None:
-            st.success(f"Loaded stats for {len(st.session_state.team_stats_df)} teams.")
-
     if refresh_team_btn:
         with st.spinner("Re-fetching from Basketball Reference..."):
-            _load_all_team_data(force=True)
+            _season_end_refresh = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+            _do_load_team_data(_season_end_refresh, force=True)
         if st.session_state.team_stats_df is not None:
-            st.success("Data refreshed from Basketball Reference.")
+            st.success("Team data refreshed.")
 
     if not st.session_state.team_data_loaded or st.session_state.team_stats_df is None:
         st.markdown(
-            '<div class="info-box">Click <b>Load Team Data</b> above to fetch NBA team stats '
-            'and standings for the selected season.</div>',
+            '<div class="info-box">Team data loads automatically when you click '
+            '<b>⬇ Load Data</b> in the sidebar.</div>',
             unsafe_allow_html=True,
         )
     else:
