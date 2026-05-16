@@ -1879,7 +1879,8 @@ with tab4:
                 unsafe_allow_html=True,
             )
         else:
-            _tdf_llm = st.session_state.get("team_stats_df") or pd.DataFrame()
+            _tdf_llm_raw = st.session_state.get("team_stats_df")
+            _tdf_llm = _tdf_llm_raw if _tdf_llm_raw is not None else pd.DataFrame()
             _team_name_col_llm = next(
                 (c for c in ["TEAM_NAME", "Team", "TeamName"] if c in _tdf_llm.columns), None
             )
@@ -2596,7 +2597,8 @@ with tab6:
         if st.session_state.team_stats_df is not None:
             st.success("Team data refreshed.")
 
-    _tdf = st.session_state.get("team_stats_df") or pd.DataFrame()
+    _tdf_raw = st.session_state.get("team_stats_df")
+    _tdf = _tdf_raw if _tdf_raw is not None else pd.DataFrame()
     if _tdf.empty:
         st.markdown(
             '<div class="info-box">Team stats unavailable — click <b>🔄 Refresh</b> above '
@@ -2605,7 +2607,8 @@ with tab6:
         )
     else:
 
-        _sdf = st.session_state.get("standings_df") or pd.DataFrame()
+        _sdf_raw = st.session_state.get("standings_df")
+        _sdf = _sdf_raw if _sdf_raw is not None else pd.DataFrame()
 
         # Resolve team name column — live API uses TEAM_NAME
         _team_name_col = "TEAM_NAME" if "TEAM_NAME" in _tdf.columns else _tdf.columns[1]
