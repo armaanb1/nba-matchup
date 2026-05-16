@@ -215,12 +215,16 @@ def fmt_game_log_context(
     player_name: str,
     season_logs: pd.DataFrame,
     playoff_logs: pd.DataFrame,
+    max_season_games: Optional[int] = None,
 ) -> str:
-    """Format game log data as LLM context string."""
+    """Format game log data as LLM context string.
+    max_season_games: if set, only include the most recent N regular-season games.
+    """
     parts = []
 
     if not season_logs.empty:
         total = len(season_logs)
+        display_logs = season_logs.tail(max_season_games) if max_season_games else season_logs
 
         def avg(col, df=season_logs): return df[col].mean()
 
@@ -228,9 +232,13 @@ def fmt_game_log_context(
         fg3_pct = avg("fg3m") / avg("fg3a") if avg("fg3a") > 0 else 0
         ft_pct = avg("ftm") / avg("fta") if avg("fta") > 0 else 0
 
+        log_label = (
+            f"last {len(display_logs)} of {total} games"
+            if max_season_games and len(display_logs) < total
+            else f"{total} games"
+        )
         parts.append(
-            f"{player_name} — full current regular season ({total} games, "
-            f"source: Basketball Reference, refreshed on every ask):\n"
+            f"{player_name} — regular season ({log_label}, source: Basketball Reference):\n"
             f"  Season averages: PPG {avg('pts'):.1f} | FGA/g {avg('fga'):.1f} | "
             f"FG% {fg_pct:.1%} | 3PA/g {avg('fg3a'):.1f} | 3P% {fg3_pct:.1%} | "
             f"FTA/g {avg('fta'):.1f} | FT% {ft_pct:.1%} | "
@@ -258,9 +266,9 @@ def fmt_game_log_context(
                     )
                 parts.append("\n".join(lines))
 
-        # Full per-game log
-        parts.append(f"  Full game log:")
-        for _, row in season_logs.iterrows():
+        # Per-game log (full or truncated)
+        parts.append(f"  Game log:")
+        for _, row in display_logs.iterrows():
             opp = row["opponent"].replace("_", " ").title()
             fga = row["fga"]
             fgm = row["fgm"]

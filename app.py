@@ -1720,19 +1720,6 @@ with tab4:
                         if len(_team_lines) > 1:
                             _career_parts.append("\n".join(_team_lines))
 
-                        # Game logs for roster players — served from cache only
-                        # (pre-fetched by Load Data / Refresh; never hits BBRef live here)
-                        if _BBREF_AVAILABLE:
-                            for _tp in _team_players:
-                                if _tp.player_id not in _named_players:
-                                    try:
-                                        _tp_plogs = get_playoff_logs(_tp.name, _season_end, cache_only=True)
-                                        _tp_rlogs = get_current_season_logs(_tp.name, _season_end, cache_only=True)
-                                        _tp_log_ctx = fmt_game_log_context(_tp.name, _tp_rlogs, _tp_plogs)
-                                        if _tp_log_ctx:
-                                            _career_parts.append(_tp_log_ctx)
-                                    except Exception:
-                                        pass
 
                     # Concept pools — enriched stats + improvement delta (compact)
                     _career_cache = {}
