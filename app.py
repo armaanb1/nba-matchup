@@ -715,6 +715,14 @@ _PLAYOFF_MATCHUP_WARNING = (
 )
 
 # ---------------------------------------------------------------------------
+# Auto-load team data on first run of the session
+# ---------------------------------------------------------------------------
+if not st.session_state.get("team_data_loaded"):
+    _auto_season_end = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
+    with st.spinner("Loading team stats and playoff bracket…"):
+        _do_load_team_data(_auto_season_end)
+
+# ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
@@ -1722,17 +1730,23 @@ with tab4:
                                         _concept_lines.append(fmt_player_compact(_cp, _career_cache.get(_cp.player_id)))
                                 _career_parts.append("\n".join(_concept_lines))
 
-                    # Playoff bracket + game box scores — always fetch fresh from BBRef
+                    # Playoff bracket + game box scores
                     if "playoffs" in _detected_concepts or _detected_teams:
                         _season_end_yr = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
-                        try:
-                            _bracket = get_bbref_playoff_bracket(_season_end_yr)
-                            if _bracket:
-                                st.session_state.playoff_bracket_list = _bracket
-                            else:
-                                _bracket = st.session_state.get("playoff_bracket_list", [])
-                        except Exception:
-                            _bracket = st.session_state.get("playoff_bracket_list", [])
+                        # Use session-state bracket (kept fresh by Load Data / Refresh Data).
+                        # Only hit BBRef live when session state is genuinely empty — hitting it
+                        # on every question causes rate-limiting and drops the bracket entirely.
+                        _bracket = st.session_state.get("playoff_bracket_list") or []
+                        if not _bracket:
+                            try:
+                                _bracket = get_bbref_playoff_bracket(_season_end_yr)
+                                if _bracket:
+                                    st.session_state.playoff_bracket_list = _bracket
+                            except Exception:
+                                _bracket = []
+
+                        _bracket_covered_teams: List[str] = []
+
                         if _bracket:
                             _bracket_ctx = fmt_playoff_context(
                                 _bracket,
@@ -1741,9 +1755,8 @@ with tab4:
                             if _bracket_ctx:
                                 _career_parts.append(_bracket_ctx)
 
-                            # Full box scores for series involving detected teams
+                            # Full box scores for series matching detected teams
                             if _detected_teams:
-                                _bracket_covered_teams: List[str] = []
                                 for _s in _bracket:
                                     t1, t2 = _s["team1"].lower(), _s["team2"].lower()
                                     if any(
@@ -1758,22 +1771,22 @@ with tab4:
                                         except Exception:
                                             pass
 
-                                # Fallback: look for cached games not yet in bracket
-                                # (handles in-progress series the scraper hasn't indexed yet)
-                                if len(_detected_teams) >= 2:
-                                    _already_covered = all(
-                                        any(ft.lower() in ct for ct in _bracket_covered_teams)
-                                        for ft in _detected_teams[:2]
+                        # Cache fallback — runs regardless of bracket state so cached
+                        # game files are always injected even when BBRef is unavailable
+                        if len(_detected_teams) >= 2:
+                            _already_covered = all(
+                                any(ft.lower() in ct for ct in _bracket_covered_teams)
+                                for ft in _detected_teams[:2]
+                            )
+                            if not _already_covered:
+                                try:
+                                    _cache_ctx = get_cached_series_boxscores_for_teams(
+                                        _detected_teams[:2]
                                     )
-                                    if not _already_covered:
-                                        try:
-                                            _cache_ctx = get_cached_series_boxscores_for_teams(
-                                                _detected_teams[:2]
-                                            )
-                                            if _cache_ctx:
-                                                _career_parts.append(_cache_ctx)
-                                        except Exception:
-                                            pass
+                                    if _cache_ctx:
+                                        _career_parts.append(_cache_ctx)
+                                except Exception:
+                                    pass
 
                 _career_context = ""
                 if _career_parts:
