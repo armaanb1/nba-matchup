@@ -89,7 +89,10 @@ def _fmt_neighborhood_summary(rows: List[Dict], role: str, top_n: int = 5) -> st
         return f"No valid {label} data available."
 
     best = sorted(valid, key=lambda x: x[ppp_key], reverse=(role == "offense"))[:top_n]
-    worst = sorted(valid, key=lambda x: x[ppp_key], reverse=(role != "offense"))[:top_n]
+    # Exclude players already in best so lists are mutually exclusive
+    best_set = {r[opp_key] for r in best}
+    remaining = [r for r in valid if r[opp_key] not in best_set]
+    worst = sorted(remaining, key=lambda x: x[ppp_key], reverse=(role != "offense"))[:top_n]
 
     def _fmt_row(r):
         team = r.get(team_key) or ""
@@ -138,9 +141,17 @@ def _fmt_shot_zones(zone_summary: Dict, player_name: str) -> str:
     return "\n".join(lines)
 
 
-def fmt_career_context(career_df: pd.DataFrame, player_name: str) -> str:
-    """Public alias — formats career splits for use as LLM context."""
-    return _fmt_career_trajectory(career_df, player_name)
+def fmt_career_context(career_df: pd.DataFrame, player_name: str, shot_zones: Optional[Dict] = None) -> str:
+    """Format career splits + optional current-season shot zones for LLM context."""
+    result = _fmt_career_trajectory(career_df, player_name)
+    if shot_zones:
+        zone_text = _fmt_shot_zones(shot_zones, player_name)
+        if zone_text:
+            if result:
+                result = result + "\n\n" + zone_text
+            else:
+                result = zone_text
+    return result
 
 
 def fmt_current_season_context(
@@ -894,6 +905,12 @@ ANALYST_SYSTEM_PROMPT = (
     "7. All player teams, head coaches, and roster facts must come from the injected data only — "
     "never from training knowledge, which may be a year or more out of date. "
     "If a player's team or a team's head coach is not listed in the data, do not name one. "
+    "CRITICAL: Do not reference specific players who are not named in the injected data or the user's question. "
+    "Players change teams constantly via trade and free agency; your training knowledge of who plays for which team "
+    "is definitively stale. If you want to cite a player-team example and that player is not in the injected data, "
+    "describe the archetype instead (e.g., 'a long switching wing' rather than naming a specific player on a specific team). "
+    "When citing specific game examples or playoff matchups, use only data from the injected game logs and box scores — "
+    "never recall games or series from training data. "
     "8. Write in complete paragraphs. No bullet points. No numbered lists. "
     "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
     "9. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."

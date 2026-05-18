@@ -34,6 +34,8 @@ from bbref_loader import (
     get_playoff_series_boxscores,
     get_cached_series_boxscores_for_teams,
     prefetch_playoff_boxscores,
+    get_team_season_results,
+    fmt_team_season_results,
 )
 from nba_api.stats.static import players as _nba_players_static
 from nba_api.stats.static import teams as _nba_teams_static
@@ -1628,6 +1630,7 @@ with tab4:
                     _static_player_tid_map = {t["nickname"]: t["id"] for t in _nba_teams_static.get_teams()}
                     _injected_team_coaches: set = set()  # avoid duplication with team section
                     for _pid, _pname in list(_named_players.items())[:3]:
+                        _zones = {}
                         player_obj = graph.players.get(_pid) if graph else None
                         if player_obj:
                             _zones = get_player_shot_zones(_pid, _season, st.session_state.get("season_type", "Regular Season"))
@@ -1658,7 +1661,7 @@ with tab4:
                                 pass
                             time.sleep(1)
                         if _cdf is not None and not _cdf.empty:
-                            _career_parts.append(fmt_career_context(_cdf, _pname))
+                            _career_parts.append(fmt_career_context(_cdf, _pname, _zones))
                         if _BBREF_AVAILABLE:
                             _reg_logs = get_current_season_logs(_pname, _season_end)
                             _playoff_logs = get_playoff_logs(_pname, _season_end)
@@ -1720,6 +1723,14 @@ with tab4:
                         if len(_team_lines) > 1:
                             _career_parts.append("\n".join(_team_lines))
 
+                        # Regular season game results — final scores only, from cache
+                        try:
+                            _rs_results = get_team_season_results(_team, _season_end)
+                            _rs_ctx = fmt_team_season_results(_team, _rs_results)
+                            if _rs_ctx:
+                                _career_parts.append(_rs_ctx)
+                        except Exception:
+                            pass
 
                     # Concept pools — enriched stats + improvement delta (compact)
                     _career_cache = {}
