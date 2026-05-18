@@ -72,6 +72,32 @@ def _get_nba_session() -> requests.Session:
     return _nba_session
 
 
+_FETCH_BACKOFF = [3, 8]          # seconds between retry attempts (attempt 1→2, 2→3)
+_NEG_CACHE_TTL = 3600            # seconds before re-trying a previously-failed endpoint
+
+def _neg_cache_path(cache_path: Path) -> Path:
+    return cache_path.with_suffix(".failed")
+
+def _neg_cache_fresh(cache_path: Path) -> bool:
+    """True if a recent failure sentinel exists and hasn't expired."""
+    p = _neg_cache_path(cache_path)
+    if not p.exists():
+        return False
+    return (time.time() - p.stat().st_mtime) < _NEG_CACHE_TTL
+
+def _write_neg_cache(cache_path: Path) -> None:
+    try:
+        _neg_cache_path(cache_path).touch()
+    except Exception:
+        pass
+
+def _clear_neg_cache(cache_path: Path) -> None:
+    try:
+        _neg_cache_path(cache_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _fetch_nba_direct(
     url: str,
     cache_path: Path,
@@ -80,8 +106,12 @@ def _fetch_nba_direct(
 ) -> Optional[Dict]:
     """
     Fetch a raw NBA.com stats API URL, with file-based caching.
-    Retries once after 3 seconds on failure.
-    Falls back to stale cache if both attempts fail.
+    - Retries up to 3 times with exponential backoff (3 s, 8 s).
+    - 503 responses get a longer first sleep (5 s) before retry.
+    - After all retries fail with no stale cache, writes a negative-cache
+      sentinel (.failed file) that suppresses re-fetching for 1 hour so the
+      NBA API isn't hammered on every page load.
+    - Falls back to stale cache if available.
     Returns parsed JSON or None on total failure.
     """
     if not force_refresh and cache_path.exists():
@@ -91,27 +121,36 @@ def _fetch_nba_direct(
         except Exception:
             pass
 
+    # Skip the network entirely if we recently confirmed this endpoint is down
+    if not force_refresh and _neg_cache_fresh(cache_path):
+        return None
+
     global _nba_session
     session = _get_nba_session()
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             resp = session.get(url, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
                 json.dump(data, f)
+            _clear_neg_cache(cache_path)
             return data
         except requests.exceptions.TooManyRedirects:
-            # Redirect loop = endpoint not available yet (e.g. playoffs not started)
             print(f"  Redirect loop for {url} — endpoint not available yet, returning None")
             return None
         except Exception as e:
             print(f"  Direct fetch attempt {attempt + 1} failed ({url}): {e}")
-            if attempt == 0:
-                time.sleep(1)
+            if attempt < 2:
+                # Longer sleep on 503 (server overloaded) vs other errors
+                is_503 = "503" in str(e)
+                sleep_secs = (5 if is_503 else _FETCH_BACKOFF[attempt])
+                time.sleep(sleep_secs)
                 _nba_session = None
+                session = _get_nba_session()
 
-    # Return stale cached data as fallback (even if force_refresh was True)
+    # All attempts failed — fall back to stale cache, then write negative sentinel
     if cache_path.exists():
         try:
             print(f"  Falling back to stale cache for {cache_path.name}")
@@ -119,6 +158,7 @@ def _fetch_nba_direct(
                 return json.load(f)
         except Exception:
             pass
+    _write_neg_cache(cache_path)
     return None
 
 
