@@ -1552,7 +1552,7 @@ with tab5:
 
     report_type = st.radio(
         "Report Type",
-        ["Matchup Report", "Player Profile Report", "Defensive Similarity Report", "Ask the Analyst"],
+        ["Matchup Report", "Player Profile Report", "Similarity Report", "Ask the Analyst"],
         horizontal=True,
     )
 
@@ -1681,23 +1681,33 @@ with tab5:
             else:
                 st.warning("Player not found.")
 
-    elif report_type == "Defensive Similarity Report":
-        ds_r_def = st.selectbox("Defender", graph.all_player_names("defense") if not _playoff_no_matchups else [], key="lr_def2")
+    elif report_type == "Similarity Report":
+        _sim_role = st.radio("Role", ["Scorer", "Defender"], horizontal=True, key="lr_sim_role")
+        if _sim_role == "Scorer":
+            _sim_names = graph.all_player_names("offense") if not _playoff_no_matchups else []
+            _sim_sel = st.selectbox("Scorer", _sim_names, key="lr_sim_scorer")
+        else:
+            _sim_names = graph.all_player_names("defense") if not _playoff_no_matchups else []
+            _sim_sel = st.selectbox("Defender", _sim_names, key="lr_sim_def")
 
         if st.button("Generate Similarity Report", type="primary", disabled=not st.session_state.api_key):
-            pid = graph.find_player_id(ds_r_def)
-            player = graph.players.get(pid)
-            similar = graph.find_similar_defenders(ds_r_def, top_n=6)
-            if player and similar:
+            _sim_pid = graph.find_player_id(_sim_sel)
+            _sim_player = graph.players.get(_sim_pid)
+            if _sim_role == "Scorer":
+                _sim_similar = graph.find_similar_scorers(_sim_sel, top_n=6)
+            else:
+                _sim_similar = graph.find_similar_defenders(_sim_sel, top_n=6)
+            if _sim_player and _sim_similar:
                 with st.spinner("Generating scouting report…"):
                     report = generate_similarity_report(
-                        player, similar, graph, st.session_state.api_key
+                        _sim_player, _sim_similar, graph, st.session_state.api_key,
+                        role="offense" if _sim_role == "Scorer" else "defense",
                     )
                 st.markdown("---")
-                st.markdown(f"### Scouting Report: {ds_r_def} — Defensive Similarity")
+                st.markdown(f"### Similarity Report: {_sim_sel}")
                 st.markdown(f'<div class="report-box">{report}</div>', unsafe_allow_html=True)
-            elif not similar:
-                st.warning("Not enough data for similarity report.")
+            elif not _sim_similar:
+                st.warning("Not enough shared opponents to generate a similarity report.")
             else:
                 st.warning("Player not found.")
 
