@@ -1152,6 +1152,386 @@ def get_player_shot_zones(
 
 
 # ---------------------------------------------------------------------------
+# Archetype data pipeline
+# ---------------------------------------------------------------------------
+
+# Synergy play type → classifier input key
+_SYNERGY_PLAY_TYPES: Dict[str, str] = {
+    "PRBallHandler": "pnr_bh_freq",
+    "Isolation":     "iso_freq",
+    "Postup":        "post_freq",
+    "PRRollman":     "roll_freq",
+    "Spotup":        "spot_freq",
+    "OffScreen":     "off_screen_freq",
+    "Handoff":       "handoff_freq",
+    "Cut":           "cut_freq",
+    "Putback":       "putback_freq",
+}
+
+
+def fetch_synergy_playtypes(
+    season: str = "2025-26",
+    season_type: str = "Regular Season",
+    force_refresh: bool = False,
+) -> Dict[int, Dict]:
+    """
+    Fetch offensive Synergy play-type possession counts for all players.
+
+    Makes 9 requests (one per play type), caches each individually and the
+    combined result.  Returns Dict[player_id, stats_dict] where each stats_dict
+    contains frequency keys (pnr_bh_freq … putback_freq) and scoring_possessions.
+    """
+    safe_s = season.replace("-", "_")
+    safe_t = season_type.replace(" ", "_")
+    combined_cache = CACHE_DIR / f"synergy_combined_{safe_s}_{safe_t}.json"
+
+    if not force_refresh and combined_cache.exists():
+        try:
+            with open(combined_cache) as f:
+                raw = json.load(f)
+            return {int(k): v for k, v in raw.items()}
+        except Exception:
+            pass
+
+    # Per-player raw possession counts before computing frequencies
+    raw_poss: Dict[int, Dict[str, float]] = {}
+
+    for play_type, freq_key in _SYNERGY_PLAY_TYPES.items():
+        pt_cache = CACHE_DIR / f"synergy_{play_type}_{safe_s}_{safe_t}.json"
+        url = (
+            "https://stats.nba.com/stats/synergyplaytypes"
+            f"?LeagueID=00&PerMode=PerPossession"
+            f"&PlayType={play_type}"
+            f"&PlayerOrTeam=P"
+            f"&SeasonType={season_type.replace(' ', '+')}"
+            f"&TypeGrouping=offensive"
+            f"&Season={season}"
+        )
+        data = _fetch_nba_direct(url, pt_cache, force_refresh=force_refresh)
+        time.sleep(NBA_API_DELAY)
+        if not data:
+            print(f"  Synergy: no data for {play_type}")
+            continue
+
+        df = _parse_nba_result_set(data, idx=0)
+        if df.empty or "PLAYER_ID" not in df.columns:
+            continue
+
+        poss_col = next((c for c in ["POSS", "GP_RANK"] if c in df.columns), None)
+        if "POSS" not in df.columns:
+            print(f"  Synergy: POSS column missing for {play_type}")
+            continue
+
+        for _, row in df.iterrows():
+            pid = _safe_int(row.get("PLAYER_ID"))
+            if pid is None:
+                continue
+            poss = _safe_float(row.get("POSS")) or 0.0
+            if pid not in raw_poss:
+                raw_poss[pid] = {}
+            raw_poss[pid][freq_key] = poss
+
+    if not raw_poss:
+        return {}
+
+    # Convert raw possession counts to frequencies
+    combined: Dict[int, Dict] = {}
+    for pid, poss_dict in raw_poss.items():
+        total = sum(poss_dict.values())
+        entry: Dict = {"scoring_possessions": total}
+        for freq_key, poss in poss_dict.items():
+            entry[freq_key] = poss / total if total > 0 else 0.0
+        combined[pid] = entry
+
+    try:
+        with open(combined_cache, "w") as f:
+            json.dump({str(k): v for k, v in combined.items()}, f)
+    except Exception:
+        pass
+
+    print(f"  Synergy: {len(combined)} players with play-type data")
+    return combined
+
+
+def fetch_tracking_stats(
+    season: str = "2025-26",
+    season_type: str = "Regular Season",
+    force_refresh: bool = False,
+) -> Dict[int, Dict]:
+    """
+    Fetch drives and paint-touch tracking stats for all players.
+
+    Returns Dict[player_id, {"drives_pg": float, "paint_touches_pg": float}].
+    Per-game values are used as proxies for per-75-possession values — adequate
+    for percentile-based classification since all players are compared on the
+    same scale.
+    """
+    safe_s = season.replace("-", "_")
+    safe_t = season_type.replace(" ", "_")
+    cache_path = CACHE_DIR / f"tracking_drives_paint_{safe_s}_{safe_t}.json"
+
+    if not force_refresh and cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                raw = json.load(f)
+            return {int(k): v for k, v in raw.items()}
+        except Exception:
+            pass
+
+    result: Dict[int, Dict] = {}
+
+    for category, out_key, col_name in [
+        ("Drives",     "drives_pg",        "DRIVES"),
+        ("PaintTouch", "paint_touches_pg",  "PAINT_TOUCHES"),
+    ]:
+        pt_cache = CACHE_DIR / f"tracking_{category}_{safe_s}_{safe_t}.json"
+        url = (
+            "https://stats.nba.com/stats/leaguedashptstats"
+            f"?Category={category}"
+            f"&PerMode=PerGame"
+            f"&Season={season}"
+            f"&SeasonType={season_type.replace(' ', '+')}"
+            f"&PlayerOrTeam=Player"
+            f"&LeagueID=00"
+        )
+        data = _fetch_nba_direct(url, pt_cache, force_refresh=force_refresh)
+        time.sleep(NBA_API_DELAY)
+        if not data:
+            print(f"  Tracking: no data for {category}")
+            continue
+
+        df = _parse_nba_result_set(data, idx=0)
+        if df.empty or "PLAYER_ID" not in df.columns or col_name not in df.columns:
+            print(f"  Tracking: {col_name} column missing for {category}")
+            continue
+
+        for _, row in df.iterrows():
+            pid = _safe_int(row.get("PLAYER_ID"))
+            val = _safe_float(row.get(col_name))
+            if pid is not None and val is not None:
+                if pid not in result:
+                    result[pid] = {}
+                result[pid][out_key] = val
+
+    if result:
+        try:
+            with open(cache_path, "w") as f:
+                json.dump({str(k): v for k, v in result.items()}, f)
+        except Exception:
+            pass
+
+    print(f"  Tracking: {len(result)} players with drive/paint data")
+    return result
+
+
+def compute_defensive_classifier_inputs(graph: "MatchupGraph") -> Dict[int, Dict]:
+    """
+    Derive defensive role classifier inputs from the existing matchup graph.
+
+    No new API calls needed.  Computes:
+      - pct_time_vs_pg/sg/sf/pf/c from opponent position strings (approximate)
+      - matchup_difficulty from weighted-average PPP allowed
+      - def_positional_versatility from Shannon entropy of positional mix
+      - pct_time_vs_[archetype] from off_archetype labels already set on Players
+      - rim_time_pct proxy: p_blk_100
+      - off_ball_help_rate proxy: p_stl_100 + p_blk_100
+
+    Run AFTER offensive archetypes are assigned so the archetype-time fields
+    are populated.
+    """
+    import math as _math
+
+    result: Dict[int, Dict] = {}
+    all_def_ids = {di for (_, di) in graph.matchups}
+
+    for def_id in all_def_ids:
+        def_edges = [
+            (oi, edge)
+            for (oi, di), edge in graph.matchups.items()
+            if di == def_id
+        ]
+        if not def_edges:
+            continue
+
+        total_poss = sum(e.possessions for _, e in def_edges)
+        if total_poss == 0:
+            continue
+
+        # Aggregate possessions by opponent position string
+        poss_by_pos: Dict[str, float] = {}
+        for oi, edge in def_edges:
+            opp = graph.players.get(oi)
+            pos = (opp.position or "").strip() if opp else ""
+            poss_by_pos[pos] = poss_by_pos.get(pos, 0.0) + edge.possessions
+
+        def _fp(keys) -> float:
+            return sum(v for k, v in poss_by_pos.items() if k in keys) / total_poss
+
+        # Approximate positional split — NBA position strings collapse PG/SG → "G" etc.
+        g_frac  = _fp({"G", "PG", "SG"})
+        gf_frac = _fp({"G-F", "F-G"})
+        f_frac  = _fp({"F", "SF", "PF"})
+        fc_frac = _fp({"F-C", "C-F"})
+        c_frac  = _fp({"C"})
+
+        pct_vs_pg = g_frac * 0.55 + gf_frac * 0.15
+        pct_vs_sg = g_frac * 0.45 + gf_frac * 0.25
+        pct_vs_sf = gf_frac * 0.60 + f_frac * 0.40
+        pct_vs_pf = f_frac  * 0.60 + fc_frac * 0.50
+        pct_vs_c  = fc_frac * 0.50 + c_frac
+
+        # Matchup difficulty: weighted average PPP allowed (raw; percentile computed in pool)
+        matchup_diff = (
+            sum(e.possessions * e.points_per_possession for _, e in def_edges)
+            / total_poss
+        )
+
+        # Positional versatility: normalised Shannon entropy of position mix
+        n_pos = len([v for v in poss_by_pos.values() if v > 0])
+        entropy = -sum(
+            (v / total_poss) * _math.log2(v / total_poss)
+            for v in poss_by_pos.values() if v > 0
+        )
+        max_entropy = _math.log2(max(n_pos, 2))
+        pos_versatility = entropy / max_entropy if max_entropy > 0 else 0.0
+
+        # Archetype time — only populated once classify_scorer has run
+        arch_poss: Dict[str, float] = {}
+        for oi, edge in def_edges:
+            opp = graph.players.get(oi)
+            if opp and opp.off_archetype:
+                av = opp.off_archetype.value
+                arch_poss[av] = arch_poss.get(av, 0.0) + edge.possessions
+
+        def _ap(label: str) -> float:
+            return arch_poss.get(label, 0.0) / total_poss
+
+        dp = graph.players.get(def_id)
+        rim_proxy  = (dp.p_blk_100 or 0.0) if dp else 0.0
+        help_proxy = ((dp.p_stl_100 or 0.0) + (dp.p_blk_100 or 0.0)) if dp else 0.0
+
+        result[def_id] = {
+            "pct_time_vs_pg": pct_vs_pg,
+            "pct_time_vs_sg": pct_vs_sg,
+            "pct_time_vs_sf": pct_vs_sf,
+            "pct_time_vs_pf": pct_vs_pf,
+            "pct_time_vs_c":  pct_vs_c,
+            "pct_time_vs_shot_creator":       _ap("Shot Creator"),
+            "pct_time_vs_primary_bh":         _ap("Primary Ball Handler"),
+            "pct_time_vs_secondary_bh":       _ap("Secondary Ball Handler"),
+            "pct_time_vs_slasher":            _ap("Slasher"),
+            "pct_time_vs_off_screen":         _ap("Off Screen Shooter"),
+            "pct_time_vs_movement_shooter":   _ap("Movement Shooter"),
+            "pct_time_vs_stationary_shooter": _ap("Stationary Shooter"),
+            "pct_time_vs_athletic_finisher":  _ap("Athletic Finisher"),
+            "matchup_difficulty":             matchup_diff,
+            "def_positional_versatility":     pos_versatility,
+            "rim_time_pct":                   rim_proxy,
+            "off_ball_help_rate":             help_proxy,
+            "height_inches":                  dp.height_inches if dp else None,
+        }
+
+    return result
+
+
+def run_archetype_classification(
+    graph: "MatchupGraph",
+    season: str = "2025-26",
+    season_type: str = "Regular Season",
+    force_refresh: bool = False,
+    progress_callback=None,
+) -> Dict[str, int]:
+    """
+    Fetch Synergy + tracking data, compute classifier inputs, assign
+    off_archetype and def_role on every Player in the graph.
+
+    Returns a summary dict: {"off_classified": n, "def_classified": n}.
+    Mutates graph.players in place.
+    progress_callback(step: str, pct: float) — optional UI hook.
+    """
+    from models import classify_scorer, classify_defender
+
+    def _cb(step, pct=0.0):
+        if progress_callback:
+            progress_callback(step, pct)
+
+    _cb("Fetching Synergy play-type data (9 calls)…", 0.05)
+    synergy = fetch_synergy_playtypes(season, season_type, force_refresh)
+
+    _cb("Fetching tracking stats (drives + paint touches)…", 0.25)
+    tracking = fetch_tracking_stats(season, season_type, force_refresh)
+
+    # Build scorer stats pool from all players
+    _cb("Building offensive classifier inputs…", 0.40)
+    scorer_pool_items: List[tuple] = []
+    for pid, player in graph.players.items():
+        s = synergy.get(pid, {})
+        t = tracking.get(pid, {})
+
+        # fg3a_rate from EPM per-100 stats
+        rim   = player.p_fga_rim_100 or 0.0
+        mid   = player.p_fga_mid_100 or 0.0
+        three = player.p_fg3a_100    or 0.0
+        total_fga_100 = rim + mid + three
+        fg3a_rate = three / total_fga_100 if total_fga_100 > 0 else None
+
+        stats = {
+            "scoring_possessions":  s.get("scoring_possessions"),
+            "pnr_bh_freq":          s.get("pnr_bh_freq"),
+            "iso_freq":             s.get("iso_freq"),
+            "post_freq":            s.get("post_freq"),
+            "roll_freq":            s.get("roll_freq"),
+            "spot_freq":            s.get("spot_freq"),
+            "off_screen_freq":      s.get("off_screen_freq"),
+            "handoff_freq":         s.get("handoff_freq"),
+            "cut_freq":             s.get("cut_freq"),
+            "putback_freq":         s.get("putback_freq"),
+            "drives_per75":         t.get("drives_pg"),
+            "fg3a_rate":            fg3a_rate,
+            "paint_touches_per75":  t.get("paint_touches_pg"),
+            "ast_per75":            player.p_ast_100,
+            "position":             player.position,
+            "height_inches":        player.height_inches,
+        }
+        scorer_pool_items.append((pid, stats))
+
+    pool_stats = [s for _, s in scorer_pool_items]
+
+    _cb("Classifying offensive archetypes…", 0.55)
+    off_classified = 0
+    for pid, stats in scorer_pool_items:
+        player = graph.players.get(pid)
+        if not player:
+            continue
+        result = classify_scorer(stats, pool_stats)
+        player.off_archetype = result
+        if result is not None:
+            off_classified += 1
+
+    print(f"  Offensive archetypes: {off_classified}/{len(scorer_pool_items)} classified")
+
+    _cb("Computing defensive inputs from matchup graph…", 0.70)
+    def_inputs = compute_defensive_classifier_inputs(graph)
+    def_pool = list(def_inputs.values())
+
+    _cb("Classifying defensive roles…", 0.85)
+    def_classified = 0
+    for def_id, d_stats in def_inputs.items():
+        player = graph.players.get(def_id)
+        if not player:
+            continue
+        result = classify_defender(d_stats, def_pool)
+        player.def_role = result
+        if result is not None:
+            def_classified += 1
+
+    print(f"  Defensive roles: {def_classified}/{len(def_inputs)} classified")
+    _cb("Done.", 1.0)
+
+    return {"off_classified": off_classified, "def_classified": def_classified}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

@@ -638,24 +638,53 @@ def stream_player_profile_report(
     return stream_report(prompt, api_key)
 
 
+def _fmt_similar_scorers(similar_list: List[Dict], top_n: int = 5) -> str:
+    if not similar_list:
+        return "No similar scorers found."
+    lines = ["Scorers with most similar offensive profile:"]
+    for s in similar_list[:top_n]:
+        lines.append(
+            f"  • {s['scorer']} ({s.get('team','')}, {s.get('position','')}): "
+            f"MPS_off={s['combined_score']:.2f}, shared defenders={s['shared_opponents']}"
+        )
+    return "\n".join(lines)
+
+
 def generate_similarity_report(
     target: Player,
     similar_list: List[Dict],
     graph_obj: MatchupGraph,
     api_key: str,
+    role: str = "auto",
 ) -> str:
-    """Generate a report explaining defensive similarity and strategic implications."""
-    target_neighborhood = graph_obj.get_defensive_neighborhood(target.name, top_n=8)
+    """
+    Generate a similarity scouting report for either a scorer or a defender.
+
+    role: "offense", "defense", or "auto" (detected from similar_list keys).
+    """
+    if role == "auto":
+        role = "offense" if similar_list and "scorer" in similar_list[0] else "defense"
+
+    if role == "offense":
+        target_neighborhood = graph_obj.get_offensive_neighborhood(target.name, top_n=8)
+        similar_fmt = _fmt_similar_scorers(similar_list, top_n=5)
+        role_label = "SCORER"
+        neighborhood_label = "OFFENSIVE MATCHUP PROFILE"
+    else:
+        target_neighborhood = graph_obj.get_defensive_neighborhood(target.name, top_n=8)
+        similar_fmt = _fmt_similar_defenders(similar_list, top_n=5)
+        role_label = "DEFENDER"
+        neighborhood_label = "DEFENSIVE MATCHUP PROFILE"
 
     context = f"""
-=== TARGET DEFENDER ===
+=== TARGET {role_label} ===
 {_fmt_player_bio(target)}
 
-=== DEFENSIVE MATCHUP PROFILE ===
-{_fmt_neighborhood_summary(target_neighborhood, role='defense', top_n=6)}
+=== {neighborhood_label} ===
+{_fmt_neighborhood_summary(target_neighborhood, role=role, top_n=6)}
 
-=== SIMILAR DEFENDERS ===
-{_fmt_similar_defenders(similar_list, top_n=5)}
+=== SIMILAR PLAYERS ===
+{similar_fmt}
 """.strip()
 
     n = min(5, len(similar_list))

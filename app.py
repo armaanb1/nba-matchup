@@ -19,6 +19,7 @@ from data_loader import (
     get_team_h2h_record,
     get_team_roster,
     load_matchup_data,
+    run_archetype_classification,
 )
 from bbref_loader import (
     get_bbref_team_stats,
@@ -478,6 +479,9 @@ with st.sidebar:
                            type="primary",
                            help="Pull latest bio + advanced stats for all players (includes playoff data)",
                            disabled=not st.session_state.data_loaded)
+    archetype_btn = st.button("🗂 Compute Archetypes", use_container_width=True,
+                              help="Fetch Synergy play-type + tracking data and run archetype classifiers (~11 API calls)",
+                              disabled=not st.session_state.data_loaded)
     st.caption("Baseline data: April 16, 2026")
 
     # Load matchup data
@@ -553,6 +557,32 @@ with st.sidebar:
                     pass
             prog_bar2.empty()
         st.success("Player, team, and game log data refreshed!")
+
+    # Compute Archetypes
+    if archetype_btn and st.session_state.graph:
+        _arch_prog = st.progress(0, text="Starting archetype classification…")
+
+        def _arch_cb(step, pct=0.0):
+            _arch_prog.progress(min(pct, 1.0), text=step)
+
+        try:
+            summary = run_archetype_classification(
+                st.session_state.graph,
+                season=st.session_state.get("season", "2025-26"),
+                season_type=st.session_state.get("season_type", "Regular Season"),
+                force_refresh=False,
+                progress_callback=_arch_cb,
+            )
+            _arch_prog.empty()
+            st.success(
+                f"Archetypes computed — "
+                f"{summary['off_classified']} offensive, "
+                f"{summary['def_classified']} defensive."
+            )
+            graph = st.session_state.graph
+        except Exception as _e:
+            _arch_prog.empty()
+            st.error(f"Archetype classification failed: {_e}")
 
     # Graph summary in sidebar
     if st.session_state.data_loaded and st.session_state.graph:
@@ -1303,7 +1333,8 @@ with tab3:
                 if st.button("Generate Similarity Report", type="primary", key="fc_report_btn"):
                     with st.spinner("Generating scouting report…"):
                         _fc_report = generate_similarity_report(
-                            fc_player, similar_fc[:5], graph, st.session_state.api_key
+                            fc_player, similar_fc[:5], graph, st.session_state.api_key,
+                            role="offense" if fc_role == "Scorer" else "defense",
                         )
                     st.markdown(f"### Scouting Report: {fc_sel} — Comparable Players")
                     st.markdown(f'<div class="report-box">{_fc_report}</div>', unsafe_allow_html=True)
