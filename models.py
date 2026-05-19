@@ -164,16 +164,20 @@ def classify_scorer(
     is_big = is_big_pos and big_scoring_mix >= 0.35
 
     if is_big:
-        big_fg3a_vals = [p.get("fg3a_rate") for p in big_pool]
-        p35_big = _pctile(big_fg3a_vals, 35)
-        p25_big = _pctile(big_fg3a_vals, 25)
         active = sum([post >= 0.01, roll >= 0.01, cut >= 0.01, putback >= 0.01, spot >= 0.01])
 
-        if fg3a_rate >= p35_big and post >= 0.12 and active >= 3:
+        # Use Synergy spot_freq as the Stretch/Versatile Big gate — it directly
+        # measures how often a player is used as a perimeter/catch-and-shoot threat.
+        # fg3a_rate from EPM per-100 stats has scaling issues and produces false
+        # positives (e.g., rim-runners classified as Stretch Bigs). spot_freq ≥ 12%
+        # means at least 1 in 8 possessions is a spot-up play — a genuine floor role.
+        _is_stretch = spot >= 0.12
+
+        if _is_stretch and post >= 0.12 and active >= 3:
             return OffensiveArchetype.VERSATILE_BIG
-        if fg3a_rate >= p35_big and post < 0.12:
+        if _is_stretch and post < 0.12:
             return OffensiveArchetype.STRETCH_BIG
-        if fg3a_rate < p25_big and post >= 0.18:
+        if post >= 0.18:
             return OffensiveArchetype.POST_SCORER
         return OffensiveArchetype.ROLL_AND_CUT_BIG
 
@@ -700,6 +704,9 @@ class MatchupGraph:
                 "defender": defender.name if defender else str(di),
                 "defender_team": defender.team if defender else None,
                 "defender_pos": defender.position if defender else None,
+                "defender_archetype": (
+                    defender.def_role.value if defender and defender.def_role else None
+                ),
                 "ppp": edge.points_per_possession,
                 "possessions": edge.possessions,
                 "points": edge.points,
@@ -732,6 +739,9 @@ class MatchupGraph:
                 "scorer": scorer.name if scorer else str(oi),
                 "scorer_team": scorer.team if scorer else None,
                 "scorer_pos": scorer.position if scorer else None,
+                "scorer_archetype": (
+                    scorer.off_archetype.value if scorer and scorer.off_archetype else None
+                ),
                 "ppp_allowed": edge.points_per_possession,
                 "possessions": edge.possessions,
                 "points_allowed": edge.points,

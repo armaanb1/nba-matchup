@@ -94,10 +94,18 @@ def _fmt_neighborhood_summary(rows: List[Dict], role: str, top_n: int = 5) -> st
     remaining = [r for r in valid if r[opp_key] not in best_set]
     worst = sorted(remaining, key=lambda x: x[ppp_key], reverse=(role != "offense"))[:top_n]
 
+    arch_key = "defender_archetype" if role == "offense" else "scorer_archetype"
+
     def _fmt_row(r):
         team = r.get(team_key) or ""
-        team_str = f" ({team})" if team else ""
-        return f"  • vs {r[opp_key]}{team_str}: PPP {r[ppp_key]:.3f}  ({r['possessions']:.0f} poss)"
+        arch = r.get(arch_key) or ""
+        meta = " · ".join(filter(None, [team, arch]))
+        meta_str = f" ({meta})" if meta else ""
+        return (
+            f"  • vs {r[opp_key]}{meta_str}: PPP {r[ppp_key]:.3f} "
+            f"FG% {r.get('fg_pct', r.get('fg_pct_allowed', 0)):.1%}  "
+            f"({r['possessions']:.0f} poss)"
+        )
 
     lines = [f"Top {top_n} {label}:"]
     for r in best:

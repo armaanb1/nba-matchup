@@ -1469,6 +1469,10 @@ def run_archetype_classification(
         s = synergy.get(pid, {})
         t = tracking.get(pid, {})
 
+        # fg3a_rate from EPM per-100 stats has unreliable scale; set to None.
+        # The Big sub-tree now uses spot_freq from Synergy instead.
+        # Guard/Wing sub-tree uses it but only as a relative percentile signal
+        # within the Guard/Wing pool, so EPM scale issues largely cancel out.
         rim   = player.p_fga_rim_100 or 0.0
         mid   = player.p_fga_mid_100 or 0.0
         three = player.p_fg3a_100    or 0.0
@@ -1618,9 +1622,10 @@ def classify_archetypes_from_existing_stats(
         orb  = player.p_orb_100      or 0.0
 
         if _is_big(player):
-            if fg3r >= p35_big_fg3a and usg >= p50_usg and mid >= p60_big_mid:
+            _stretch_thr = max(p35_big_fg3a, 0.20)  # same floor as classify_scorer
+            if fg3r >= _stretch_thr and usg >= p50_usg and mid >= p60_big_mid:
                 arch = OffensiveArchetype.VERSATILE_BIG
-            elif fg3r >= p35_big_fg3a:
+            elif fg3r >= _stretch_thr:
                 arch = OffensiveArchetype.STRETCH_BIG
             elif fg3r < p25_big_fg3a and mid >= p60_big_mid:
                 arch = OffensiveArchetype.POST_SCORER
