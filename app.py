@@ -421,15 +421,16 @@ if not st.session_state.data_loaded and not st.session_state.get("_autoload_done
                 enrich_graph(_auto_g, season=_auto_season)
                 st.session_state.enriched = True
 
-                # Load archetypes from SQLite; compute + save if none stored yet
+                # Load archetypes from SQLite; run full classification if none stored yet
                 _load_archetypes_from_db(_auto_g, _auto_season)
                 _arch_count = sum(
                     1 for p in _auto_g.players.values() if p.off_archetype is not None
                 )
                 if _arch_count == 0:
                     try:
-                        classify_archetypes_from_existing_stats(_auto_g)
-                        _save_archetypes_to_db(_auto_g, _auto_season)
+                        run_archetype_classification(
+                            _auto_g, season=_auto_season,
+                        )
                     except Exception:
                         pass
 
@@ -605,10 +606,14 @@ with st.sidebar:
                     pass
             prog_bar2.empty()
 
-        with st.spinner("Re-computing archetypes…"):
+        with st.spinner("Re-computing archetypes with latest data…"):
             try:
-                _rsum = classify_archetypes_from_existing_stats(st.session_state.graph)
-                _save_archetypes_to_db(st.session_state.graph, _enrich_season)
+                run_archetype_classification(
+                    st.session_state.graph,
+                    season=_enrich_season,
+                    season_type=st.session_state.get("season_type", "Regular Season"),
+                    force_refresh=True,
+                )
                 graph = st.session_state.graph
             except Exception:
                 pass

@@ -1155,7 +1155,8 @@ def get_player_shot_zones(
 # Archetype data pipeline
 # ---------------------------------------------------------------------------
 
-# Synergy play type → classifier input key
+# Synergy play type name → classifier input key
+# "OffRebound" is the correct API value for putbacks (not "Putback")
 _SYNERGY_PLAY_TYPES: Dict[str, str] = {
     "PRBallHandler": "pnr_bh_freq",
     "Isolation":     "iso_freq",
@@ -1165,162 +1166,134 @@ _SYNERGY_PLAY_TYPES: Dict[str, str] = {
     "OffScreen":     "off_screen_freq",
     "Handoff":       "handoff_freq",
     "Cut":           "cut_freq",
-    "Putback":       "putback_freq",
+    "OffRebound":    "putback_freq",
 }
 
 
-def fetch_synergy_playtypes(
+def scrape_synergy_to_db(
     season: str = "2025-26",
     season_type: str = "Regular Season",
     force_refresh: bool = False,
 ) -> Dict[int, Dict]:
     """
-    Fetch offensive Synergy play-type possession counts for all players.
+    Scrape offensive Synergy play-type data for all players using nba_api,
+    store in SQLite, and return the combined dict.
 
-    Makes 9 requests (one per play type), caches each individually and the
-    combined result.  Returns Dict[player_id, stats_dict] where each stats_dict
-    contains frequency keys (pnr_bh_freq … putback_freq) and scoring_possessions.
+    Uses nba_api library classes for correct parameter encoding.
+    play_type OffRebound = putbacks (the correct API name, not 'Putback').
+    PerMode=Totals avoids per-possession quirks; frequencies computed from raw counts.
+    Data persists in SQLite — subsequent calls read from DB, no API requests.
     """
-    safe_s = season.replace("-", "_")
-    safe_t = season_type.replace(" ", "_")
-    combined_cache = CACHE_DIR / f"synergy_combined_{safe_s}_{safe_t}.json"
+    from nba_api.stats.endpoints import synergyplaytypes as _sp
+    from db import get_synergy_playtypes, upsert_synergy_playtypes, init_db
+    init_db()
 
-    if not force_refresh and combined_cache.exists():
-        try:
-            with open(combined_cache) as f:
-                raw = json.load(f)
-            return {int(k): v for k, v in raw.items()}
-        except Exception:
-            pass
+    if not force_refresh:
+        existing = get_synergy_playtypes(season)
+        if existing:
+            print(f"  Synergy: loaded {len(existing)} players from DB")
+            return existing
 
-    # Per-player raw possession counts before computing frequencies
     raw_poss: Dict[int, Dict[str, float]] = {}
 
     for play_type, freq_key in _SYNERGY_PLAY_TYPES.items():
-        pt_cache = CACHE_DIR / f"synergy_{play_type}_{safe_s}_{safe_t}.json"
-        url = (
-            "https://stats.nba.com/stats/synergyplaytypes"
-            f"?LeagueID=00&PerMode=PerPossession"
-            f"&PlayType={play_type}"
-            f"&PlayerOrTeam=P"
-            f"&SeasonType={season_type.replace(' ', '+')}"
-            f"&TypeGrouping=offensive"
-            f"&Season={season}"
-        )
-        data = _fetch_nba_direct(url, pt_cache, force_refresh=force_refresh)
-        time.sleep(NBA_API_DELAY)
-        if not data:
-            print(f"  Synergy: no data for {play_type}")
-            continue
-
-        df = _parse_nba_result_set(data, idx=0)
-        if df.empty or "PLAYER_ID" not in df.columns:
-            continue
-
-        poss_col = next((c for c in ["POSS", "GP_RANK"] if c in df.columns), None)
-        if "POSS" not in df.columns:
-            print(f"  Synergy: POSS column missing for {play_type}")
-            continue
-
-        for _, row in df.iterrows():
-            pid = _safe_int(row.get("PLAYER_ID"))
-            if pid is None:
+        try:
+            ep = _sp.SynergyPlayTypes(
+                league_id="00",
+                per_mode_simple="Totals",
+                play_type_nullable=play_type,
+                player_or_team_abbreviation="P",
+                season_nullable=season,
+                season_type_all_star=season_type,
+                type_grouping_nullable="offensive",
+                timeout=45,
+            )
+            time.sleep(NBA_API_DELAY)
+            df = ep.get_data_frames()[0]
+            if df.empty or "PLAYER_ID" not in df.columns or "POSS" not in df.columns:
+                print(f"  Synergy: {play_type} — empty or missing POSS column")
                 continue
-            poss = _safe_float(row.get("POSS")) or 0.0
-            if pid not in raw_poss:
-                raw_poss[pid] = {}
-            raw_poss[pid][freq_key] = poss
+            for _, row in df.iterrows():
+                pid  = _safe_int(row.get("PLAYER_ID"))
+                poss = _safe_float(row.get("POSS")) or 0.0
+                if pid is not None and poss > 0:
+                    raw_poss.setdefault(pid, {})[freq_key] = poss
+            print(f"  Synergy: {play_type} — {len(df)} rows")
+        except Exception as e:
+            print(f"  Synergy: {play_type} failed: {e}")
 
     if not raw_poss:
+        print("  Synergy: no data scraped")
         return {}
 
-    # Convert raw possession counts to frequencies
     combined: Dict[int, Dict] = {}
     for pid, poss_dict in raw_poss.items():
         total = sum(poss_dict.values())
         entry: Dict = {"scoring_possessions": total}
-        for freq_key, poss in poss_dict.items():
-            entry[freq_key] = poss / total if total > 0 else 0.0
+        for fk, p in poss_dict.items():
+            entry[fk] = p / total if total > 0 else 0.0
         combined[pid] = entry
 
-    try:
-        with open(combined_cache, "w") as f:
-            json.dump({str(k): v for k, v in combined.items()}, f)
-    except Exception:
-        pass
-
-    print(f"  Synergy: {len(combined)} players with play-type data")
+    upsert_synergy_playtypes(combined, season)
+    print(f"  Synergy: {len(combined)} players stored in DB")
     return combined
 
 
-def fetch_tracking_stats(
+def scrape_tracking_to_db(
     season: str = "2025-26",
     season_type: str = "Regular Season",
     force_refresh: bool = False,
 ) -> Dict[int, Dict]:
     """
-    Fetch drives and paint-touch tracking stats for all players.
+    Scrape drives and paint-touch tracking stats using nba_api, store in SQLite.
 
-    Returns Dict[player_id, {"drives_pg": float, "paint_touches_pg": float}].
-    Per-game values are used as proxies for per-75-possession values — adequate
+    Uses nba_api LeagueDashPtStats with correct pt_measure_type parameter.
+    Per-game values serve as proxies for per-75-possession values — adequate
     for percentile-based classification since all players are compared on the
     same scale.
     """
-    safe_s = season.replace("-", "_")
-    safe_t = season_type.replace(" ", "_")
-    cache_path = CACHE_DIR / f"tracking_drives_paint_{safe_s}_{safe_t}.json"
+    from nba_api.stats.endpoints import leaguedashptstats as _lpt
+    from db import get_player_tracking, upsert_player_tracking, init_db
+    init_db()
 
-    if not force_refresh and cache_path.exists():
-        try:
-            with open(cache_path) as f:
-                raw = json.load(f)
-            return {int(k): v for k, v in raw.items()}
-        except Exception:
-            pass
+    if not force_refresh:
+        existing = get_player_tracking(season)
+        if existing:
+            print(f"  Tracking: loaded {len(existing)} players from DB")
+            return existing
 
     result: Dict[int, Dict] = {}
 
-    for category, out_key, col_name in [
+    for pt_type, out_key, col_name in [
         ("Drives",     "drives_pg",        "DRIVES"),
         ("PaintTouch", "paint_touches_pg",  "PAINT_TOUCHES"),
     ]:
-        pt_cache = CACHE_DIR / f"tracking_{category}_{safe_s}_{safe_t}.json"
-        url = (
-            "https://stats.nba.com/stats/leaguedashptstats"
-            f"?PtMeasureType={category}"
-            f"&PerMode=PerGame"
-            f"&Season={season}"
-            f"&SeasonType={season_type.replace(' ', '+')}"
-            f"&PlayerOrTeam=Player"
-            f"&LeagueID=00"
-        )
-        data = _fetch_nba_direct(url, pt_cache, force_refresh=force_refresh)
-        time.sleep(NBA_API_DELAY)
-        if not data:
-            print(f"  Tracking: no data for {category}")
-            continue
-
-        df = _parse_nba_result_set(data, idx=0)
-        if df.empty or "PLAYER_ID" not in df.columns or col_name not in df.columns:
-            print(f"  Tracking: {col_name} column missing for {category}")
-            continue
-
-        for _, row in df.iterrows():
-            pid = _safe_int(row.get("PLAYER_ID"))
-            val = _safe_float(row.get(col_name))
-            if pid is not None and val is not None:
-                if pid not in result:
-                    result[pid] = {}
-                result[pid][out_key] = val
+        try:
+            ep = _lpt.LeagueDashPtStats(
+                pt_measure_type=pt_type,
+                per_mode_simple="PerGame",
+                season=season,
+                season_type_all_star=season_type,
+                league_id="00",
+                timeout=45,
+            )
+            time.sleep(NBA_API_DELAY)
+            df = ep.get_data_frames()[0]
+            if df.empty or "PLAYER_ID" not in df.columns or col_name not in df.columns:
+                print(f"  Tracking: {pt_type} — empty or missing {col_name}")
+                continue
+            for _, row in df.iterrows():
+                pid = _safe_int(row.get("PLAYER_ID"))
+                val = _safe_float(row.get(col_name))
+                if pid is not None and val is not None:
+                    result.setdefault(pid, {})[out_key] = val
+            print(f"  Tracking: {pt_type} — {len(df)} rows")
+        except Exception as e:
+            print(f"  Tracking: {pt_type} failed: {e}")
 
     if result:
-        try:
-            with open(cache_path, "w") as f:
-                json.dump({str(k): v for k, v in result.items()}, f)
-        except Exception:
-            pass
-
-    print(f"  Tracking: {len(result)} players with drive/paint data")
+        upsert_player_tracking(result, season)
+        print(f"  Tracking: {len(result)} players stored in DB")
     return result
 
 
@@ -1442,22 +1415,125 @@ def run_archetype_classification(
     progress_callback=None,
 ) -> Dict[str, int]:
     """
-    Classify archetypes using only stats already cached on Player objects.
+    Full accurate archetype classification using Synergy + tracking data.
 
-    No new API calls.  Works entirely from EPM per-100 stats, box scores,
-    position, and matchup graph edges.  Fast — runs in under a second.
+    Flow:
+      1. Load Synergy play-type frequencies from SQLite (or scrape + store if absent).
+      2. Load tracking data from SQLite (or scrape + store if absent).
+      3. Run classify_scorer() with full Synergy + tracking inputs.
+      4. Compute defensive inputs from matchup graph.
+      5. Run classify_defender().
+      6. Save archetype labels to SQLite.
 
-    Returns {"off_classified": n, "def_classified": n}.
+    Falls back to stats-only simplified classifier if Synergy scraping fails.
     Mutates graph.players in place.
     """
+    from models import classify_scorer, classify_defender
+    from db import upsert_archetypes, init_db
+    init_db()
+
     def _cb(step, pct=0.0):
         if progress_callback:
             progress_callback(step, pct)
 
-    _cb("Classifying offensive archetypes from cached stats…", 0.10)
-    summary = classify_archetypes_from_existing_stats(graph)
+    # ── 1. Synergy play-type data ─────────────────────────────────────────────
+    _cb("Loading Synergy play-type data from DB (scraping if needed)…", 0.05)
+    synergy = scrape_synergy_to_db(season, season_type, force_refresh)
+    if not synergy:
+        print("  Synergy unavailable — falling back to stats-only classifier")
+        _cb("Synergy unavailable. Using stats-only classifier…", 0.20)
+        summary = classify_archetypes_from_existing_stats(graph)
+        _cb("Saving to DB…", 0.90)
+        _season = season
+        for pid, player in graph.players.items():
+            upsert_archetypes(
+                pid,
+                player.off_archetype.value if player.off_archetype else None,
+                player.def_role.value if player.def_role else None,
+                _season,
+            )
+        _cb("Done.", 1.0)
+        return summary
+
+    # ── 2. Tracking data ──────────────────────────────────────────────────────
+    _cb("Loading tracking data from DB (scraping if needed)…", 0.30)
+    tracking = scrape_tracking_to_db(season, season_type, force_refresh)
+
+    # ── 3. Build scorer stats pool and classify ────────────────────────────────
+    _cb("Building offensive classifier inputs…", 0.45)
+    scorer_pool_items: List[tuple] = []
+    for pid, player in graph.players.items():
+        s = synergy.get(pid, {})
+        t = tracking.get(pid, {})
+
+        rim   = player.p_fga_rim_100 or 0.0
+        mid   = player.p_fga_mid_100 or 0.0
+        three = player.p_fg3a_100    or 0.0
+        total_fga_100 = rim + mid + three
+        fg3a_rate = three / total_fga_100 if total_fga_100 > 0 else None
+
+        scorer_pool_items.append((pid, {
+            "scoring_possessions":  s.get("scoring_possessions"),
+            "pnr_bh_freq":          s.get("pnr_bh_freq"),
+            "iso_freq":             s.get("iso_freq"),
+            "post_freq":            s.get("post_freq"),
+            "roll_freq":            s.get("roll_freq"),
+            "spot_freq":            s.get("spot_freq"),
+            "off_screen_freq":      s.get("off_screen_freq"),
+            "handoff_freq":         s.get("handoff_freq"),
+            "cut_freq":             s.get("cut_freq"),
+            "putback_freq":         s.get("putback_freq"),
+            "drives_per75":         t.get("drives_pg"),
+            "fg3a_rate":            fg3a_rate,
+            "paint_touches_per75":  t.get("paint_touches_pg"),
+            "ast_per75":            player.p_ast_100,
+            "position":             player.position,
+            "height_inches":        player.height_inches,
+        }))
+
+    pool_stats = [s for _, s in scorer_pool_items]
+
+    _cb("Classifying offensive archetypes…", 0.60)
+    off_classified = 0
+    for pid, stats in scorer_pool_items:
+        player = graph.players.get(pid)
+        if not player:
+            continue
+        result = classify_scorer(stats, pool_stats)
+        player.off_archetype = result
+        if result is not None:
+            off_classified += 1
+    print(f"  Offensive archetypes: {off_classified}/{len(scorer_pool_items)} classified")
+
+    # ── 4 + 5. Defensive roles from graph ─────────────────────────────────────
+    _cb("Computing defensive inputs from matchup graph…", 0.75)
+    def_inputs = compute_defensive_classifier_inputs(graph)
+    def_pool = list(def_inputs.values())
+
+    _cb("Classifying defensive roles…", 0.85)
+    def_classified = 0
+    for def_id, d_stats in def_inputs.items():
+        player = graph.players.get(def_id)
+        if not player:
+            continue
+        result = classify_defender(d_stats, def_pool)
+        player.def_role = result
+        if result is not None:
+            def_classified += 1
+    print(f"  Defensive roles: {def_classified}/{len(def_inputs)} classified")
+
+    # ── 6. Persist to SQLite ───────────────────────────────────────────────────
+    _cb("Saving archetype labels to database…", 0.95)
+    for pid, player in graph.players.items():
+        upsert_archetypes(
+            pid,
+            player.off_archetype.value if player.off_archetype else None,
+            player.def_role.value if player.def_role else None,
+            season,
+        )
+
     _cb("Done.", 1.0)
-    return summary
+    return {"off_classified": off_classified, "def_classified": def_classified}
 
 
 def classify_archetypes_from_existing_stats(

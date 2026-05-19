@@ -87,6 +87,32 @@ def init_db() -> None:
                 updated_at      TEXT,
                 PRIMARY KEY (player_id, season)
             );
+
+            CREATE TABLE IF NOT EXISTS synergy_playtypes (
+                player_id           INTEGER NOT NULL,
+                season              TEXT    NOT NULL,
+                scoring_possessions REAL,
+                pnr_bh_freq         REAL,
+                iso_freq            REAL,
+                post_freq           REAL,
+                roll_freq           REAL,
+                spot_freq           REAL,
+                off_screen_freq     REAL,
+                handoff_freq        REAL,
+                cut_freq            REAL,
+                putback_freq        REAL,
+                updated_at          TEXT,
+                PRIMARY KEY (player_id, season)
+            );
+
+            CREATE TABLE IF NOT EXISTS player_tracking (
+                player_id       INTEGER NOT NULL,
+                season          TEXT    NOT NULL,
+                drives_pg       REAL,
+                paint_touches_pg REAL,
+                updated_at      TEXT,
+                PRIMARY KEY (player_id, season)
+            );
         """)
 
 
@@ -240,6 +266,103 @@ def get_archetypes(season: str) -> Dict[int, Dict[str, Optional[str]]]:
             row["player_id"]: {
                 "off_archetype": row["off_archetype"],
                 "def_role": row["def_role"],
+            }
+            for row in cursor.fetchall()
+        }
+
+
+def upsert_synergy_playtypes(data: Dict[int, Dict], season: str) -> None:
+    """Bulk upsert Synergy play-type frequency data keyed by player_id."""
+    updated_at = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (
+            pid, season,
+            d.get("scoring_possessions"),
+            d.get("pnr_bh_freq"),
+            d.get("iso_freq"),
+            d.get("post_freq"),
+            d.get("roll_freq"),
+            d.get("spot_freq"),
+            d.get("off_screen_freq"),
+            d.get("handoff_freq"),
+            d.get("cut_freq"),
+            d.get("putback_freq"),
+            updated_at,
+        )
+        for pid, d in data.items()
+    ]
+    with _connect() as conn:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO synergy_playtypes (
+                player_id, season, scoring_possessions,
+                pnr_bh_freq, iso_freq, post_freq, roll_freq, spot_freq,
+                off_screen_freq, handoff_freq, cut_freq, putback_freq,
+                updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            rows,
+        )
+
+
+def get_synergy_playtypes(season: str) -> Dict[int, Dict]:
+    """Return Synergy play-type frequencies keyed by player_id."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            SELECT player_id, scoring_possessions,
+                   pnr_bh_freq, iso_freq, post_freq, roll_freq, spot_freq,
+                   off_screen_freq, handoff_freq, cut_freq, putback_freq
+            FROM synergy_playtypes WHERE season = ?
+            """,
+            (season,),
+        )
+        return {
+            row["player_id"]: {
+                "scoring_possessions": row["scoring_possessions"],
+                "pnr_bh_freq":         row["pnr_bh_freq"],
+                "iso_freq":            row["iso_freq"],
+                "post_freq":           row["post_freq"],
+                "roll_freq":           row["roll_freq"],
+                "spot_freq":           row["spot_freq"],
+                "off_screen_freq":     row["off_screen_freq"],
+                "handoff_freq":        row["handoff_freq"],
+                "cut_freq":            row["cut_freq"],
+                "putback_freq":        row["putback_freq"],
+            }
+            for row in cursor.fetchall()
+        }
+
+
+def upsert_player_tracking(data: Dict[int, Dict], season: str) -> None:
+    """Bulk upsert drives and paint-touch tracking stats keyed by player_id."""
+    updated_at = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (pid, season, d.get("drives_pg"), d.get("paint_touches_pg"), updated_at)
+        for pid, d in data.items()
+    ]
+    with _connect() as conn:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO player_tracking
+                (player_id, season, drives_pg, paint_touches_pg, updated_at)
+            VALUES (?,?,?,?,?)
+            """,
+            rows,
+        )
+
+
+def get_player_tracking(season: str) -> Dict[int, Dict]:
+    """Return drives_pg and paint_touches_pg keyed by player_id."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "SELECT player_id, drives_pg, paint_touches_pg FROM player_tracking WHERE season = ?",
+            (season,),
+        )
+        return {
+            row["player_id"]: {
+                "drives_pg":        row["drives_pg"],
+                "paint_touches_pg": row["paint_touches_pg"],
             }
             for row in cursor.fetchall()
         }
