@@ -20,6 +20,7 @@ from data_loader import (
     get_team_roster,
     load_matchup_data,
     run_archetype_classification,
+    classify_archetypes_from_existing_stats,
 )
 from bbref_loader import (
     get_bbref_team_stats,
@@ -353,6 +354,89 @@ def _init_state():
 
 _init_state()
 
+
+# ---------------------------------------------------------------------------
+# SQLite archetype persistence helpers
+# ---------------------------------------------------------------------------
+
+def _load_archetypes_from_db(g: MatchupGraph, season: str) -> None:
+    """Restore off_archetype and def_role from SQLite into the in-memory graph."""
+    try:
+        from db import get_archetypes
+        stored = get_archetypes(season)
+        for pid, labels in stored.items():
+            player = g.players.get(pid)
+            if not player:
+                continue
+            off_val = labels.get("off_archetype")
+            def_val = labels.get("def_role")
+            if off_val:
+                try:
+                    player.off_archetype = OffensiveArchetype(off_val)
+                except ValueError:
+                    pass
+            if def_val:
+                try:
+                    player.def_role = DefensiveRole(def_val)
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+
+def _save_archetypes_to_db(g: MatchupGraph, season: str) -> None:
+    """Persist off_archetype and def_role from in-memory graph to SQLite."""
+    try:
+        from db import upsert_archetypes
+        for pid, player in g.players.items():
+            off = player.off_archetype.value if player.off_archetype else None
+            def_ = player.def_role.value if player.def_role else None
+            upsert_archetypes(pid, off, def_, season)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Auto-load from cache on first render (no button click required)
+# ---------------------------------------------------------------------------
+
+if not st.session_state.data_loaded and not st.session_state.get("_autoload_done"):
+    st.session_state._autoload_done = True
+    _auto_season = st.session_state.get("season", "2025-26")
+    _auto_csv = CACHE_DIR / f"matchups_{_auto_season.replace('-', '_')}_Regular_Season.csv"
+    if _auto_csv.exists():
+        try:
+            _auto_df = load_matchup_data(
+                _auto_season, "Regular Season",
+                min_possessions=st.session_state.get("min_poss", 20),
+            )
+            if not _auto_df.empty:
+                _auto_g = MatchupGraph()
+                _auto_g.build_from_dataframe(
+                    _auto_df, min_possessions=st.session_state.get("min_poss", 20)
+                )
+                st.session_state.graph = _auto_g
+                st.session_state.data_loaded = True
+                st.session_state.season = _auto_season
+                enrich_graph(_auto_g, season=_auto_season)
+                st.session_state.enriched = True
+
+                # Load archetypes from SQLite; compute + save if none stored yet
+                _load_archetypes_from_db(_auto_g, _auto_season)
+                _arch_count = sum(
+                    1 for p in _auto_g.players.values() if p.off_archetype is not None
+                )
+                if _arch_count == 0:
+                    try:
+                        classify_archetypes_from_existing_stats(_auto_g)
+                        _save_archetypes_to_db(_auto_g, _auto_season)
+                    except Exception:
+                        pass
+
+                st.session_state.team_data_loaded = False
+        except Exception:
+            pass
+
 graph: MatchupGraph | None = st.session_state.graph
 
 
@@ -474,115 +558,62 @@ with st.sidebar:
 
     st.markdown("---")
 
-    load_btn = st.button("⬇ Load Data", use_container_width=True, type="primary")
     enrich_btn = st.button("🔄 Refresh Data", use_container_width=True,
                            type="primary",
-                           help="Pull latest bio + advanced stats for all players (includes playoff data)",
+                           help="Re-fetch latest player stats and game logs from NBA API",
                            disabled=not st.session_state.data_loaded)
-    archetype_btn = st.button("🗂 Compute Archetypes", use_container_width=True,
-                              help="Fetch Synergy play-type + tracking data and run archetype classifiers (~11 API calls)",
-                              disabled=not st.session_state.data_loaded)
-    st.caption("Baseline data: April 16, 2026")
+    st.caption("Data loads automatically from cache on startup.")
 
-    # Load matchup data
-    if load_btn:
-        with st.spinner(f"Loading {season} matchup data…"):
-            try:
-                df = load_matchup_data(season, season_type, min_possessions=min_poss)
-                if df.empty and season_type == "Playoffs":
-                    st.warning(
-                        "The NBA stats API does not provide player matchup data "
-                        "(LeagueSeasonMatchups) for the Playoffs. "
-                        "Try **Regular Season** for full matchup graph features. "
-                        "Shot charts, player profiles, and team stats still work with Playoffs selected."
-                    )
-                g = MatchupGraph()
-                g.build_from_dataframe(df, min_possessions=min_poss)
-                st.session_state.graph = g
-                st.session_state.data_loaded = True
-                st.session_state.enriched = False
-                st.session_state.season = season
-                st.session_state.season_type = season_type
-                st.session_state.min_poss = min_poss
-                graph = g
-                st.success(f"Graph built — {g.graph.number_of_nodes()} nodes, "
-                           f"{g.graph.number_of_edges()} edges")
-                # Auto-enrich from cache (fast since cache files are pre-committed)
-                try:
-                    enrich_graph(g, season=season)
-                    st.session_state.enriched = True
-                    graph = g
-                except Exception:
-                    pass  # silently skip — user can manually refresh
-            except Exception as e:
-                st.error(f"Load failed: {e}")
-
-        with st.spinner("Fetching team stats and playoff bracket…"):
-            _season_end_load = int(season.split("-")[0]) + 1
-            _do_load_team_data(_season_end_load)
-
-    # Refresh player data
+    # Refresh Data — re-fetches from NBA API, re-enriches, re-classifies archetypes
     if enrich_btn and st.session_state.graph:
-        prog_bar = st.progress(0, text="Refreshing players…")
-        total = len(st.session_state.graph.players)
+        _enrich_season = st.session_state.get("season", "2025-26")
+        _enrich_end    = int(_enrich_season.split("-")[0]) + 1
+
+        prog_bar = st.progress(0, text="Refreshing player stats…")
 
         def _prog(i, tot, name):
-            prog_bar.progress(i / tot, text=f"Refreshing {name}… ({i}/{tot})")
+            prog_bar.progress(i / max(tot, 1), text=f"Refreshing {name}… ({i}/{tot})")
 
-        with st.spinner("Fetching latest bio + stats for all players…"):
+        with st.spinner("Fetching latest bio + stats from NBA API…"):
             try:
-                enrich_graph(st.session_state.graph,
-                             season=st.session_state.season,
-                             progress_callback=_prog,
-                             force_refresh_epm=True)
+                enrich_graph(
+                    st.session_state.graph,
+                    season=_enrich_season,
+                    progress_callback=_prog,
+                    force_refresh_epm=True,
+                )
                 st.session_state.enriched = True
                 graph = st.session_state.graph
+            except Exception as _e:
+                st.error(f"Stat refresh error: {_e}")
+            finally:
                 prog_bar.empty()
-            except Exception as e:
-                prog_bar.empty()
-                st.error(f"Refresh error: {e}")
 
         with st.spinner("Refreshing team stats and bracket…"):
-            _season_end_enrich = int(st.session_state.get("season", "2025-26").split("-")[0]) + 1
-            _do_load_team_data(_season_end_enrich)
+            _do_load_team_data(_enrich_end)
+
         if _BBREF_AVAILABLE and st.session_state.graph:
             _all_names = list({p.name for p in st.session_state.graph.players.values()})
             prog_bar2 = st.progress(0, text="Pre-fetching game logs…")
             for _li, _lname in enumerate(_all_names):
-                prog_bar2.progress((_li + 1) / max(len(_all_names), 1), text=f"Fetching logs: {_lname}")
+                prog_bar2.progress((_li + 1) / max(len(_all_names), 1),
+                                   text=f"Fetching logs: {_lname}")
                 try:
-                    get_current_season_logs(_lname, _season_end_enrich)
-                    get_playoff_logs(_lname, _season_end_enrich)
+                    get_current_season_logs(_lname, _enrich_end)
+                    get_playoff_logs(_lname, _enrich_end)
                 except Exception:
                     pass
             prog_bar2.empty()
-        st.success("Player, team, and game log data refreshed!")
 
-    # Compute Archetypes
-    if archetype_btn and st.session_state.graph:
-        _arch_prog = st.progress(0, text="Starting archetype classification…")
+        with st.spinner("Re-computing archetypes…"):
+            try:
+                _rsum = classify_archetypes_from_existing_stats(st.session_state.graph)
+                _save_archetypes_to_db(st.session_state.graph, _enrich_season)
+                graph = st.session_state.graph
+            except Exception:
+                pass
 
-        def _arch_cb(step, pct=0.0):
-            _arch_prog.progress(min(pct, 1.0), text=step)
-
-        try:
-            summary = run_archetype_classification(
-                st.session_state.graph,
-                season=st.session_state.get("season", "2025-26"),
-                season_type=st.session_state.get("season_type", "Regular Season"),
-                force_refresh=False,
-                progress_callback=_arch_cb,
-            )
-            _arch_prog.empty()
-            st.success(
-                f"Archetypes computed — "
-                f"{summary['off_classified']} offensive, "
-                f"{summary['def_classified']} defensive."
-            )
-            graph = st.session_state.graph
-        except Exception as _e:
-            _arch_prog.empty()
-            st.error(f"Archetype classification failed: {_e}")
+        st.success("Data refreshed — stats, game logs, and archetypes updated.")
 
     # Graph summary in sidebar
     if st.session_state.data_loaded and st.session_state.graph:
@@ -593,10 +624,13 @@ with st.sidebar:
         st.metric("Players (Offense)", summ["offensive_players"])
         st.metric("Players (Defense)", summ["defensive_players"])
         st.metric("Matchup Edges", summ["total_edges"])
-        st.metric("Avg Connections", f"{summ['avg_degree']:.1f}")
         st.metric("Avg PPP", f"{summ['avg_ppp']:.3f}")
-        enriched_status = "✅ Enriched" if st.session_state.enriched else "⚠ Basic only"
-        st.caption(enriched_status)
+        _off_arch_n = sum(1 for p in g.players.values() if p.off_archetype)
+        _def_role_n = sum(1 for p in g.players.values() if p.def_role)
+        if _off_arch_n:
+            st.caption(f"✅ {_off_arch_n} off archetypes · {_def_role_n} def roles")
+        else:
+            st.caption("Archetypes computing on next render…")
 
     graph = st.session_state.graph
 

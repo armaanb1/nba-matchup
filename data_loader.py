@@ -1287,7 +1287,7 @@ def fetch_tracking_stats(
         pt_cache = CACHE_DIR / f"tracking_{category}_{safe_s}_{safe_t}.json"
         url = (
             "https://stats.nba.com/stats/leaguedashptstats"
-            f"?Category={category}"
+            f"?PtMeasureType={category}"
             f"&PerMode=PerGame"
             f"&Season={season}"
             f"&SeasonType={season_type.replace(' ', '+')}"
@@ -1442,80 +1442,143 @@ def run_archetype_classification(
     progress_callback=None,
 ) -> Dict[str, int]:
     """
-    Fetch Synergy + tracking data, compute classifier inputs, assign
-    off_archetype and def_role on every Player in the graph.
+    Classify archetypes using only stats already cached on Player objects.
 
-    Returns a summary dict: {"off_classified": n, "def_classified": n}.
+    No new API calls.  Works entirely from EPM per-100 stats, box scores,
+    position, and matchup graph edges.  Fast — runs in under a second.
+
+    Returns {"off_classified": n, "def_classified": n}.
     Mutates graph.players in place.
-    progress_callback(step: str, pct: float) — optional UI hook.
     """
-    from models import classify_scorer, classify_defender
-
     def _cb(step, pct=0.0):
         if progress_callback:
             progress_callback(step, pct)
 
-    _cb("Fetching Synergy play-type data (9 calls)…", 0.05)
-    synergy = fetch_synergy_playtypes(season, season_type, force_refresh)
+    _cb("Classifying offensive archetypes from cached stats…", 0.10)
+    summary = classify_archetypes_from_existing_stats(graph)
+    _cb("Done.", 1.0)
+    return summary
 
-    _cb("Fetching tracking stats (drives + paint touches)…", 0.25)
-    tracking = fetch_tracking_stats(season, season_type, force_refresh)
 
-    # Build scorer stats pool from all players
-    _cb("Building offensive classifier inputs…", 0.40)
-    scorer_pool_items: List[tuple] = []
-    for pid, player in graph.players.items():
-        s = synergy.get(pid, {})
-        t = tracking.get(pid, {})
+def classify_archetypes_from_existing_stats(
+    graph: "MatchupGraph",
+) -> Dict[str, int]:
+    """
+    Assign off_archetype and def_role on every Player using only the stats
+    already available on the Player object (EPM per-100, USG%, AST%, position,
+    height).  No API calls required.
 
-        # fg3a_rate from EPM per-100 stats
-        rim   = player.p_fga_rim_100 or 0.0
-        mid   = player.p_fga_mid_100 or 0.0
-        three = player.p_fg3a_100    or 0.0
-        total_fga_100 = rim + mid + three
-        fg3a_rate = three / total_fga_100 if total_fga_100 > 0 else None
+    Uses a simplified signal set:
+      - fg3a_rate  = p_fg3a_100 / (p_fga_rim_100 + p_fga_mid_100 + p_fg3a_100)
+      - rim attack = p_fga_rim_100  (proxy for drives/slashing)
+      - playmaking = p_ast_100
+      - scoring load = usg_pct
+      - rebounding  = p_orb_100
+      - position string + height_inches for the Big Gate
+    """
+    import numpy as _np
+    from models import OffensiveArchetype, DefensiveRole, _is_big_by_position
+    from models import classify_defender
 
-        stats = {
-            "scoring_possessions":  s.get("scoring_possessions"),
-            "pnr_bh_freq":          s.get("pnr_bh_freq"),
-            "iso_freq":             s.get("iso_freq"),
-            "post_freq":            s.get("post_freq"),
-            "roll_freq":            s.get("roll_freq"),
-            "spot_freq":            s.get("spot_freq"),
-            "off_screen_freq":      s.get("off_screen_freq"),
-            "handoff_freq":         s.get("handoff_freq"),
-            "cut_freq":             s.get("cut_freq"),
-            "putback_freq":         s.get("putback_freq"),
-            "drives_per75":         t.get("drives_pg"),
-            "fg3a_rate":            fg3a_rate,
-            "paint_touches_per75":  t.get("paint_touches_pg"),
-            "ast_per75":            player.p_ast_100,
-            "position":             player.position,
-            "height_inches":        player.height_inches,
-        }
-        scorer_pool_items.append((pid, stats))
+    def _pctile_vals(values: List, pct: float) -> float:
+        arr = _np.array([v for v in values if v is not None], dtype=float)
+        return float(_np.percentile(arr, pct)) if len(arr) > 0 else 0.0
 
-    pool_stats = [s for _, s in scorer_pool_items]
+    all_players = list(graph.players.values())
 
-    _cb("Classifying offensive archetypes…", 0.55)
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _fg3a_rate(p) -> Optional[float]:
+        rim = p.p_fga_rim_100 or 0.0
+        mid = p.p_fga_mid_100 or 0.0
+        thr = p.p_fg3a_100    or 0.0
+        tot = rim + mid + thr
+        return thr / tot if tot > 3.0 else None
+
+    def _is_big(p) -> bool:
+        return _is_big_by_position(p.position) or bool(p.height_inches and p.height_inches >= 82)
+
+    # ── pool percentile thresholds ─────────────────────────────────────────────
+
+    bigs = [p for p in all_players if _is_big(p)]
+    gws  = [p for p in all_players if not _is_big(p)]
+
+    big_fg3a_vals = [_fg3a_rate(p) for p in bigs]
+    gw_fg3a_vals  = [_fg3a_rate(p) for p in gws]
+
+    p80_usg = _pctile_vals([p.usg_pct for p in all_players], 80)
+    p75_usg = _pctile_vals([p.usg_pct for p in all_players], 75)
+    p50_usg = _pctile_vals([p.usg_pct for p in all_players], 50)
+    p75_ast = _pctile_vals([p.p_ast_100 for p in all_players], 75)
+    p50_ast = _pctile_vals([p.p_ast_100 for p in all_players], 50)
+    p80_rim = _pctile_vals([p.p_fga_rim_100 for p in all_players], 80)
+    p60_rim = _pctile_vals([p.p_fga_rim_100 for p in all_players], 60)
+    p50_rim = _pctile_vals([p.p_fga_rim_100 for p in all_players], 50)
+    p80_orb = _pctile_vals([p.p_orb_100 for p in all_players], 80)
+
+    p35_big_fg3a = _pctile_vals(big_fg3a_vals, 35)
+    p25_big_fg3a = _pctile_vals(big_fg3a_vals, 25)
+    p60_big_mid  = _pctile_vals([p.p_fga_mid_100 for p in bigs], 60)
+
+    p45_gw_fg3a = _pctile_vals(gw_fg3a_vals, 45)
+    p30_gw_fg3a = _pctile_vals(gw_fg3a_vals, 30)
+
+    # ── offensive classification ───────────────────────────────────────────────
+
     off_classified = 0
-    for pid, stats in scorer_pool_items:
-        player = graph.players.get(pid)
-        if not player:
+    for player in all_players:
+        if not player.ppg or not player.games or player.games < 10:
+            player.off_archetype = None
             continue
-        result = classify_scorer(stats, pool_stats)
-        player.off_archetype = result
-        if result is not None:
+
+        fg3r = _fg3a_rate(player) or 0.0
+        usg  = player.usg_pct        or 0.0
+        ast  = player.p_ast_100      or 0.0
+        rim  = player.p_fga_rim_100  or 0.0
+        mid  = player.p_fga_mid_100  or 0.0
+        orb  = player.p_orb_100      or 0.0
+
+        if _is_big(player):
+            if fg3r >= p35_big_fg3a and usg >= p50_usg and mid >= p60_big_mid:
+                arch = OffensiveArchetype.VERSATILE_BIG
+            elif fg3r >= p35_big_fg3a:
+                arch = OffensiveArchetype.STRETCH_BIG
+            elif fg3r < p25_big_fg3a and mid >= p60_big_mid:
+                arch = OffensiveArchetype.POST_SCORER
+            else:
+                arch = OffensiveArchetype.ROLL_AND_CUT_BIG
+        else:
+            # Priority: Shot Creator > Primary BH > Slasher > Secondary BH >
+            #           Athletic Finisher > Shooter buckets
+            if usg >= p80_usg and rim >= p80_rim:
+                arch = OffensiveArchetype.SHOT_CREATOR
+            elif (usg >= p75_usg or ast >= p75_ast) and rim >= p50_rim:
+                arch = OffensiveArchetype.PRIMARY_BH
+            elif rim >= p80_rim and fg3r < p30_gw_fg3a:
+                arch = OffensiveArchetype.SLASHER
+            elif usg >= p50_usg and ast >= p50_ast and fg3r < p45_gw_fg3a:
+                arch = OffensiveArchetype.SECONDARY_BH
+            elif orb >= p80_orb and rim >= p50_rim and fg3r < p30_gw_fg3a:
+                arch = OffensiveArchetype.ATHLETIC_FINISHER
+            elif fg3r >= p45_gw_fg3a:
+                h = player.height_inches or 76
+                arch = (OffensiveArchetype.OFF_SCREEN_SHOOTER if h >= 78
+                        else OffensiveArchetype.STATIONARY_SHOOTER)
+            else:
+                arch = None
+
+        player.off_archetype = arch
+        if arch is not None:
             off_classified += 1
 
-    print(f"  Offensive archetypes: {off_classified}/{len(scorer_pool_items)} classified")
+    print(f"  Offensive archetypes: {off_classified}/{len(all_players)} classified")
 
-    _cb("Computing defensive inputs from matchup graph…", 0.70)
+    # ── defensive classification (uses off archetypes set above) ──────────────
+
     def_inputs = compute_defensive_classifier_inputs(graph)
-    def_pool = list(def_inputs.values())
-
-    _cb("Classifying defensive roles…", 0.85)
+    def_pool   = list(def_inputs.values())
     def_classified = 0
+
     for def_id, d_stats in def_inputs.items():
         player = graph.players.get(def_id)
         if not player:
@@ -1526,8 +1589,6 @@ def run_archetype_classification(
             def_classified += 1
 
     print(f"  Defensive roles: {def_classified}/{len(def_inputs)} classified")
-    _cb("Done.", 1.0)
-
     return {"off_classified": off_classified, "def_classified": def_classified}
 
 
