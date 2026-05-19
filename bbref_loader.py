@@ -660,6 +660,93 @@ def get_game_boxscore(
     return result
 
 
+def get_team_season_results(team_name: str, season_end_year: int) -> List[Dict]:
+    """
+    Scrape the full regular-season schedule/results for a team from BBRef.
+    Returns list of {date, opponent, home, team_pts, opp_pts, result} dicts.
+    Cached permanently (regular season is immutable once complete).
+    """
+    abbr = _get_bbref_abbr(team_name)
+    if not abbr:
+        return []
+
+    cache_path = CACHE_DIR / f"team_results_{abbr}_{season_end_year}.json"
+    if cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    soup = _bbref_soup(
+        f"https://www.basketball-reference.com/teams/{abbr}/{season_end_year}_games.html"
+    )
+    if soup is None:
+        return []
+
+    table = soup.find("table", id="games")
+    if table is None:
+        return []
+
+    games = []
+    for row in table.find("tbody").find_all("tr"):
+        if row.get("class") and "thead" in row.get("class", []):
+            continue
+
+        def td(stat):
+            c = row.find(["td", "th"], {"data-stat": stat})
+            return c.get_text(strip=True) if c else ""
+
+        date_str = td("date_game")
+        result = td("game_result")
+        if not date_str or result not in ("W", "L"):
+            continue
+
+        location = td("game_location")   # "@" = away, "" = home
+        opp = td("opp_name") or td("opp_id")
+        try:
+            team_pts = int(td("pts"))
+            opp_pts = int(td("opp_pts"))
+        except (ValueError, TypeError):
+            continue
+
+        games.append({
+            "date": date_str,
+            "opponent": opp,
+            "home": location != "@",
+            "team_pts": team_pts,
+            "opp_pts": opp_pts,
+            "result": result,
+        })
+
+    if games:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump(games, f)
+        except Exception:
+            pass
+    time.sleep(BBREF_DELAY)
+    return games
+
+
+def fmt_team_season_results(team_name: str, games: List[Dict]) -> str:
+    """Format team season results as a compact score list for LLM context."""
+    if not games:
+        return ""
+    wins = sum(1 for g in games if g["result"] == "W")
+    lines = [
+        f"=== {team_name.upper()} — 2025-26 REGULAR SEASON RESULTS ({wins}-{len(games)-wins}) ==="
+    ]
+    for g in games:
+        loc = "vs" if g["home"] else "at"
+        lines.append(
+            f"  {g['date']}: {loc} {g['opponent']} "
+            f"{g['team_pts']}-{g['opp_pts']} {g['result']}"
+        )
+    return "\n".join(lines)
+
+
 def fmt_boxscore(box: Dict) -> str:
     """Format a single game box score dict into LLM-readable text."""
     as_ = box.get("away_score")
