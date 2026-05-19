@@ -1201,10 +1201,10 @@ def scrape_synergy_to_db(
             ep = _sp.SynergyPlayTypes(
                 league_id="00",
                 per_mode_simple="Totals",
-                play_type_nullable=play_type,
                 player_or_team_abbreviation="P",
-                season_nullable=season,
                 season_type_all_star=season_type,
+                season=season,
+                play_type_nullable=play_type,
                 type_grouping_nullable="offensive",
                 timeout=45,
             )
@@ -1274,7 +1274,10 @@ def scrape_tracking_to_db(
                 per_mode_simple="PerGame",
                 season=season,
                 season_type_all_star=season_type,
-                league_id="00",
+                player_or_team="Player",
+                last_n_games=0,
+                month=0,
+                opponent_team_id=0,
                 timeout=45,
             )
             time.sleep(NBA_API_DELAY)

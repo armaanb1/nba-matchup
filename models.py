@@ -59,11 +59,20 @@ def _pctile(values: List[Optional[float]], pct: float) -> float:
 
 
 def _is_big_by_position(position_str: Optional[str]) -> bool:
-    """Proxy for center/PF when explicit position-time data is unavailable."""
+    """
+    Proxy for center/PF when explicit position-time data is unavailable.
+    Handles both full NBA API names ("Center", "Center-Forward") and
+    abbreviations ("C", "F-C") since the API returns either depending on endpoint.
+    """
     if not position_str:
         return False
-    pos = position_str.upper().replace(" ", "")
-    return pos in ("C", "F-C", "C-F", "FC", "CF")
+    pos = position_str.strip()
+    # Full names returned by CommonPlayerInfo
+    if pos in ("Center", "Center-Forward", "Forward-Center"):
+        return True
+    # Abbreviations
+    abbr = pos.upper().replace(" ", "").replace("-", "")
+    return abbr in ("C", "FC", "CF")
 
 
 def classify_scorer(
@@ -87,7 +96,7 @@ def classify_scorer(
     pool — no hardcoded absolute values.
     """
     scoring_poss = stats.get("scoring_possessions")
-    if scoring_poss is not None and scoring_poss < 250:
+    if scoring_poss is not None and scoring_poss < 100:
         return None
 
     pnr_bh      = stats.get("pnr_bh_freq")
@@ -125,7 +134,7 @@ def classify_scorer(
 
     qualifying = [
         p for p in player_pool
-        if p.get("scoring_possessions") is None or (p.get("scoring_possessions") or 0) >= 250
+        if p.get("scoring_possessions") is None or (p.get("scoring_possessions") or 0) >= 100
     ]
 
     def _is_pool_big(p: Dict) -> bool:

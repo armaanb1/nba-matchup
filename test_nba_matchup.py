@@ -787,7 +787,7 @@ def _make_pool(base: dict, n: int = 20) -> list:
 class TestOffensiveArchetypeClassifier(unittest.TestCase):
 
     def test_returns_none_below_possession_minimum(self):
-        stats = _make_scorer_stats(scoring_possessions=100)
+        stats = _make_scorer_stats(scoring_possessions=50)
         result = classify_scorer(stats, [stats])
         self.assertIsNone(result)
 
