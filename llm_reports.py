@@ -306,67 +306,55 @@ def _fmt_similar_defenders(similar_list: List[Dict], top_n: int = 5) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
-    "You are a veteran NBA scout writing an internal report for a coaching staff preparing for a playoff series. "
-    "You have watched every game. You are not summarizing a spreadsheet — you are telling the coaches something "
-    "they need to know that they might not see just by looking at the numbers themselves. "
+    "You are writing a matchup analysis column. Your job is to explain why "
+    "certain offensive players thrive against certain defensive archetypes — "
+    "and what that means for how teams should build rosters. Every report ends "
+    "with a conclusion: a specific schematic adjustment, a defensive assignment, "
+    "or a roster move. Never summarize the data. Deliver a verdict."
 
-    "Voice and tone rules — these are non-negotiable: "
+    "\n\nVoice rules — non-negotiable:"
 
-    "1. Never lead a sentence with a stat, but every analytical claim must be anchored by one. "
-    "Stats belong parenthetically inside the argument, not as the opening. "
+    "\n1. Never lead a sentence with a stat. Stats belong parenthetically inside "
+    "the argument. "
     "Wrong: '46.7% FG and 0.298 PPP this season.' "
-    "Right: 'Brunson lives in the mid-range and the paint — and he's efficient there (46.7% FG, 0.298 PPP) "
-    "because his frame actually works in his favor in those zones, not against him.' "
-    "If you make a claim about tendency, decline, improvement, or comparison — cite the number. "
-    "Only use numbers present in the data provided to you. Never invent or approximate a statistic. "
+    "Right: 'Brunson lives in the mid-range and the paint — efficiently "
+    "(46.7% FG, 0.298 PPP) — because his frame works in his favor there.' "
+    "Only use numbers present in the data provided. Never invent or approximate "
+    "a statistic."
 
-    "2. Every cited number must be followed by a mechanical explanation. What physical attribute, skill, or "
-    "defensive scheme produced that number? If you cannot explain why a number exists, do not cite it. "
+    "\n2. Every cited number needs a mechanical explanation. What physical "
+    "attribute, skill, or scheme produced it? If you cannot explain the why, "
+    "do not cite the number."
 
-    "3. Write in complete thoughts, not bullet fragments. Each paragraph should make one argument, "
-    "support it with evidence, and connect it to a tactical consequence. "
+    "\n3. Archetypes over individuals. When describing who a player beats or "
+    "struggles against, lead with the archetype — the physical or schematic "
+    "type that causes the outcome — then name specific players as examples."
 
-    "4. Use the language scouts actually use. Paint touches. Leverage points. Help rotations. "
-    "Verticality. Shade coverage. Screen navigation. Drop vs. hedge vs. switch. "
-    "Do not use phrases like 'it is worth noting', 'demonstrates', 'exhibits', or 'showcases'. "
+    "\n4. The head-to-head section is the sharpest part of any matchup report. "
+    "Open with the headline finding — synthesize PPP, FG%, possessions, and "
+    "turnovers into one clear picture. Then give the physical reason it happened. "
+    "Then state the game-plan implication. No setup. Get to the finding "
+    "immediately."
 
-    "5. Archetypes over individuals. When describing who a player beats or struggles against, "
-    "lead with the archetype — what physical or schematic type causes the outcome — then name "
-    "the specific players as examples. "
+    "\n5. The strategic recommendation must be a specific action with a specific "
+    "trigger: name the play type, the coverage scheme, and the floor zone to "
+    "force the offensive player toward. Reference the offensive player's weakest "
+    "high-volume zone and the defender's best physical tool. No generic advice."
 
-    "6. The head-to-head matchup section must be the sharpest part of the report. "
-    "This is what the coach actually needs. Open with the headline finding from the data — "
-    "the single most important thing the PPP, FG%, or possession count reveals about this pairing. "
-    "Then give the physical reason it happened. Then state the game-plan implication. "
-    "Do not set up the matchup with background; get to the finding immediately. "
+    "\n6. Use scout language: paint touches, leverage points, help rotations, "
+    "verticality, shade coverage, screen navigation, drop vs. hedge vs. switch. "
+    "Never write: 'it is worth noting', 'demonstrates', 'exhibits', 'showcases', "
+    "'certainly', 'great question', or 'as an AI.'"
 
-    "7. The strategic recommendation must be a specific action with a specific trigger. "
-    "It must reference the offensive player's weakest high-volume zone and the defensive player's "
-    "best physical tool. No generic advice. "
+    "\n7. Career trajectory data: only reference a trend when it changes the "
+    "tactical read. If a player's 3P% has dropped three straight seasons, mention "
+    "it when discussing how hard to chase them off the line. If the trend "
+    "confirms what this season shows, skip it. Current season stats always lead."
 
-    "8. When career trajectory data is provided, do not write a career section. "
-    "Reference the trend only where it changes the tactical read — for example, if a player's "
-    "3P% has declined three straight seasons, mention it when discussing how hard to chase them "
-    "off the line. If the trend confirms what this season already shows, skip it. "
-    "Current season stats always lead. "
-
-    "9. No title, header, bullet points, or preamble anywhere in the report — not even section labels. "
-    "Write continuous prose. Start directly with the offensive profile. "
-    "Structure your four paragraphs as follows: "
-    "(1) OFFENSIVE PROFILE — where the player operates, why those zones work given their physical tools, "
-    "which shot zones are weapons vs. volume releases; "
-    "(2) DEFENSIVE ARCHETYPE ANALYSIS — which archetypes contain them and why mechanically, "
-    "which archetypes struggle and the physical reason; "
-    "(3) THE SPECIFIC MATCHUP — what the head-to-head data shows about this exact pairing, "
-    "the physical explanation, and the game-plan consequence; "
-    "(4) STRATEGIC RECOMMENDATION — one specific triggered action naming play type, coverage scheme, "
-    "and the floor zone to force the offensive player toward. "
-    "Total report: 400-500 words. "
-
-    "10. Write about the offensive player first, in full, before addressing the defensive player. "
-    "The offensive profile must describe: where on the floor they operate, why they are effective "
-    "there given their physical tools, which shot zones are genuine weapons vs. volume releases, "
-    "and which defensive archetypes give them trouble and why. Only then move to the defender."
+    "\n8. No titles, headers, paragraph labels, or bullet points anywhere in the "
+    "report. Continuous prose only. Every report ends with a verdict the reader "
+    "can act on: a roster move, a coverage scheme, or a defensive assignment. "
+    "Never end with a summary of what was already said."
 )
 
 
@@ -464,32 +452,28 @@ def _build_matchup_prompt(
 {_fmt_neighborhood_summary(def_neighborhood, role='defense')}{zone_section}{team_section}
 """.strip()
 
-    if off_zone_ctx or def_zone_ctx:
-        zone_profile_instruction = (
-            f" Shot distribution data is provided — use it inside the offensive profile to specify "
-            f"exactly where {off_player.name} attacks, distinguish genuine weapons from volume zones, "
-            f"and contrast corner 3 vs. above-break 3 tendencies and paint frequency. "
-            f"Do not list the zones — draw conclusions about how the defense must position."
-        )
-    else:
-        zone_profile_instruction = ""
-
-    defender_offense_instruction = (
-        f" Only reference {def_player.name}'s own offensive role if his usage or scoring load is "
-        f"notably high for a player in this defensive assignment — and only if it changes how the "
-        f"coaching staff should manage his minutes or deployment."
-    )
-
     return (
-        f"Write a scouting report on {off_player.name} as the offensive player being guarded by {def_player.name}. "
-        f"The report is for a coaching staff preparing a defensive game plan. "
-        f"Start with {off_player.name}'s offensive profile — where he operates, why those zones work given his physical tools, "
-        f"which archetypes struggle to contain him and why, and which archetypes neutralize him and the mechanical reason.{zone_profile_instruction} "
-        f"Then analyze {def_player.name} specifically as the matchup — what his physical profile means for this pairing "
-        f"and what the head-to-head data shows about whether that expectation held.{defender_offense_instruction} "
-        f"Close with one specific, triggered strategic recommendation that names the play type, "
-        f"the coverage scheme, and the floor zone to force {off_player.name} toward. "
-        f"Use the stats in the context below as evidence — weave them parenthetically into the argument.\n\n{context}"
+        f"Write a matchup analysis on {off_player.name} being guarded by "
+        f"{def_player.name}. Two paragraphs only.\n\n"
+        f"Paragraph 1 — THE MATCHUP: Open with the headline finding from the "
+        f"head-to-head data — synthesize PPP, FG%, possessions, and turnovers into "
+        f"one clear picture of how this pairing played out. Then give the physical "
+        f"reason it happened. Use the offensive and defensive archetype context to "
+        f"explain whether the result was expected — does {off_player.name} typically "
+        f"feast on or struggle against {def_player.name}'s archetype, and did the "
+        f"data confirm or break that trend? If the result defied the expected archetype "
+        f"matchup, explain why. If it confirmed it, state what physical tool or "
+        f"schematic trait made the difference.\n\n"
+        f"Paragraph 2 — THE VERDICT: One specific triggered action. Name the play "
+        f"type, the coverage scheme, and the floor zone to force {off_player.name} "
+        f"toward. Reference their weakest high-volume zone and {def_player.name}'s "
+        f"best physical tool. If the archetype matchup favors the offense, the verdict "
+        f"must reflect urgency — what the defense must do differently. If it favors "
+        f"the defense, state what the offense needs to counter. No generic advice.\n\n"
+        f"Only reference {def_player.name}'s offensive role if their scoring load is "
+        f"high enough to force opponent trade-offs in how they load toward their "
+        f"defensive assignment. Use stats parenthetically as evidence throughout.\n\n"
+        f"{context}"
     )
 
 
@@ -564,45 +548,67 @@ def _build_profile_prompt(
 """.strip()
 
     if role == "offense":
-        if zone_ctx:
-            zone_instruction = (
-                f" Shot distribution data is provided — use it to identify exactly where {player.name} "
-                f"operates, which zones are genuine weapons vs. pressure releases, and what that means "
-                f"for how a defense must load and position. Do not list the zones. Draw conclusions from them."
-            )
-        else:
-            zone_instruction = ""
-
         return (
-            f"Write a scouting report on {player.name} as an offensive player, for a coaching staff "
-            f"preparing to defend him. Answer: where does he score, why does it work given his physical tools, "
-            f"and what schematic or physical conditions shut him down.{zone_instruction} "
-            f"The neighborhood data shows his PPP against each defender he has faced — use it to identify "
-            f"the defensive archetype that limits him and explain the physical reason why that body type "
-            f"disrupts his game, then name the archetype that gets exploited and why. "
-            f"If career trajectory data shows a trend that changes the defensive read — declining FTA, "
-            f"three-point volume without efficiency, slipping rim conversion — weave it in. Do not write a career section. "
-            f"Close with one specific scheme recommendation naming the play type, the coverage scheme, "
-            f"and the floor zone to force {player.name} toward. "
-            f"Every number supports an argument about how to guard him.\n\n{context}"
+            f"Write a scouting report on {player.name} as an offensive player, for a "
+            f"coaching staff preparing to defend them. Four paragraphs.\n\n"
+            f"Paragraph 1 — OFFENSIVE PROFILE: Name the offensive archetype. Where does "
+            f"{player.name} score and why do those zones work given their physical tools. "
+            f"Distinguish which zones are genuine weapons vs. which they operate in at "
+            f"high volume without efficiency. If shot zone data is provided, use it to "
+            f"draw conclusions about how a defense must load and position — do not list "
+            f"the zones. Address how central they are to the offense using USG% "
+            f"contextualized against the rest of the league — if they are particularly "
+            f"high or low, say so and explain the implication. Note whether they are a "
+            f"meaningful playmaker, an offensive rebounder, or a liability in any area — "
+            f"including negative indicators like TOV% or inefficient high-volume zones. "
+            f"Use percentile context to show where they stand relative to the league, "
+            f"especially where they are an outlier.\n\n"
+            f"Paragraph 2 — DEFENSIVE ARCHETYPE ANALYSIS: Which defensive archetypes "
+            f"contain them and the mechanical reason why those players disrupt their game. "
+            f"Which archetypes get exploited and why. Use the neighborhood data to "
+            f"identify which defenders have held them down and which have gotten torched — "
+            f"explain the physical reason behind each pattern. Do not rely on PPP alone — "
+            f"also use field goal percentage, efficiency, and turnovers to fully "
+            f"contextualize those results.\n\n"
+            f"Paragraph 3 — TENDENCY AND TRAJECTORY: If career trajectory data shows a "
+            f"trend that changes the defensive read — declining FTA, three-point volume "
+            f"without efficiency, slipping rim conversion, role shift — state it and "
+            f"explain what it means for how much to respect each part of their game. If "
+            f"the trend confirms what this season already shows, skip it. Do not write a "
+            f"career section.\n\n"
+            f"Paragraph 4 — THE VERDICT: One specific scheme recommendation. Name the "
+            f"play type, the coverage scheme, and the floor zone to force {player.name} "
+            f"toward. Every number in this report supports an argument about how to guard "
+            f"them.\n\n{context}"
         )
     else:
         return (
-            f"Write a scouting report on {player.name} as a defender, for a coaching staff preparing "
-            f"to attack him. Answer: how does he guard, what are his physical tools and limitations, "
-            f"and which offensive profiles consistently score on him. "
-            f"The neighborhood data shows PPP allowed per offensive player he has guarded — use it to identify "
-            f"the offensive archetype that exploits him and explain the physical reason why that matchup "
-            f"works, then identify what archetype he handles well and why his length, positioning, or scheme "
-            f"disrupts those players. "
-            f"His own offensive profile is relevant only if his scoring load forces the opponent to make "
-            f"trade-offs — e.g. if he is a threat that commands attention off-ball and that changes how "
-            f"a defense can load toward his assignment. "
-            f"If career trajectory data shows a trend that changes the attacking read — declining lateral "
-            f"quickness, changing role, foul-rate patterns — weave it in. Do not write a career section. "
-            f"Close with one specific scheme recommendation naming the play type, the action to run at him, "
-            f"and the floor zone where the offense should initiate. "
-            f"Every number supports an argument about how to score against him.\n\n{context}"
+            f"Write a scouting report on {player.name} as a defender, for a "
+            f"coaching staff preparing to attack them. Four paragraphs.\n\n"
+            f"Paragraph 1 — DEFENSIVE ARCHETYPE: Name the defensive role. What physical "
+            f"and schematic traits define how {player.name} guards. What are their best "
+            f"tools and where do they apply on the floor. Which coverage schemes they "
+            f"execute well and which they struggle in. Use DEPM and the defensive stat "
+            f"profile to contextualize how impactful they are relative to the rest of the "
+            f"league — note any area where they are a clear outlier, positive or "
+            f"negative.\n\n"
+            f"Paragraph 2 — OFFENSIVE PROFILES THAT EXPLOIT THEM: Use the neighborhood "
+            f"data to identify which offensive archetypes consistently score on them and "
+            f"the physical reason why that matchup works. Then identify which offensive "
+            f"profiles they handle well and the mechanical reason their length, "
+            f"positioning, or scheme disrupts those players. Do not rely on PPP alone — "
+            f"also use field goal percentage, efficiency, and turnovers to fully "
+            f"contextualize those results.\n\n"
+            f"Paragraph 3 — TENDENCY AND TRAJECTORY: If career trajectory data shows a "
+            f"trend that changes the attacking read — declining lateral quickness, "
+            f"changing defensive role, foul-rate patterns — state it and explain the "
+            f"implication. Only reference {player.name}'s offensive role if their scoring "
+            f"load forces the opponent to make trade-offs in how they can load toward "
+            f"their defensive assignment. Do not write a career section.\n\n"
+            f"Paragraph 4 — THE VERDICT: One specific scheme recommendation naming the "
+            f"play type, the action to run at them, and the floor zone where the offense "
+            f"should initiate. Every number in this report supports an argument about how "
+            f"to score against them.\n\n{context}"
         )
 
 
@@ -652,213 +658,46 @@ def generate_similarity_report(
 {_fmt_similar_defenders(similar_list, top_n=5)}
 """.strip()
 
+    n = min(5, len(similar_list))
+    similar_names = ", ".join(s.get("defender", s.get("scorer", "?")) for s in similar_list[:n])
+
     prompt = (
-        f"Write a scouting report explaining what defenders are most similar to "
-        f"{target.name} and what this means strategically. "
-        f"Lead with the defensive archetype {target.name} represents — what physical and schematic "
-        f"traits define how they guard, and which offensive profiles exploit or struggle against that archetype. "
-        f"Then explain what the similar defenders share with {target.name} mechanically — "
-        f"not just that the numbers match, but why the same offensive players give them all trouble. "
-        f"Close with what a front office or coaching staff should know when game-planning against "
-        f"any defender in this archetype group.\n\n{context}"
+        f"Write a scouting report on {target.name} and the {n} most similar players "
+        f"to them, covering both offensive and defensive profiles. The {n} most "
+        f"similar players by combined MPS score are: {similar_names}. "
+        f"Reference these players by name throughout the report. Four paragraphs.\n\n"
+        f"Paragraph 1 — PLAYER ARCHETYPE: What archetype does {target.name} represent "
+        f"on both ends. What physical and schematic traits define how they score and "
+        f"how they guard. Which floor zones they own offensively and which coverage "
+        f"responsibilities they handle defensively. This is the baseline — everything "
+        f"in the report connects back to it.\n\n"
+        f"Paragraph 2 — OFFENSIVE SIMILARITY: What the comparable scorers share with "
+        f"{target.name} mechanically — not just that the numbers align, but why they "
+        f"attack the same zones, exploit the same defensive archetypes, and struggle "
+        f"against the same coverage types. Use the MPS_off score and shared defender "
+        f"data to explain which parts of their offensive games are truly "
+        f"interchangeable and which are only superficially similar. Name specific "
+        f"players from the list when the comparison is mechanically meaningful. Name "
+        f"the offensive archetype this group represents.\n\n"
+        f"Paragraph 3 — DEFENSIVE SIMILARITY: What the comparable defenders share "
+        f"with {target.name} mechanically — why the same offensive archetypes give "
+        f"them all trouble and why the same offensive profiles get contained. Use the "
+        f"MPS_def score and shared opponent data to explain which parts of their "
+        f"defensive profiles are truly interchangeable. Name specific players from "
+        f"the list when the comparison is mechanically meaningful. Name the defensive "
+        f"archetype this group represents and what that means for how offenses should "
+        f"attack any player in it.\n\n"
+        f"Paragraph 4 — THE VERDICT: One actionable conclusion for a front office or "
+        f"coaching staff. If {target.name} is unavailable, name the single most viable "
+        f"replacement from the {n} similar players on each end and the specific reason "
+        f"why — not just that the scores are close, but what they share mechanically. "
+        f"If the context is game-planning against {target.name}, state which tendency "
+        f"from the comparable players group best predicts their coverage or attack "
+        f"pattern. Commit to one conclusion — roster move, scheme adjustment, or "
+        f"defensive assignment.\n\n{context}"
     )
     return _call_anthropic(prompt, api_key)
 
-
-def generate_team_matchup_report(
-    team1_name: str,
-    team2_name: str,
-    team1_stats: Dict,
-    team2_stats: Dict,
-    graph_obj: MatchupGraph,
-    api_key: str,
-) -> str:
-    """Generate a scouting report for a team vs. team matchup."""
-    context = f"""
-=== TEAM 1: {team1_name.upper()} ===
-{_fmt_team_stats(team1_name, team1_stats)}
-
-=== TEAM 2: {team2_name.upper()} ===
-{_fmt_team_stats(team2_name, team2_stats)}
-
-=== KEY PLAYER MATCHUPS (from matchup graph) ===
-{_fmt_cross_team_matchups(team1_name, team2_name, graph_obj)}
-""".strip()
-
-    prompt = (
-        f"Write a team matchup scouting report for {team1_name} vs {team2_name}. "
-        f"For each advantage cited, explain the schematic or physical reason behind it — not just the number. "
-        f"Identify the two or three individual matchups that will determine the series outcome and explain "
-        f"why those specific pairings matter physically and schematically. "
-        f"Each strategic recommendation must name the play type, screening action, or coverage scheme — "
-        f"not 'exploit the mismatch'. "
-        f"Do not list stats. Build an argument about which team wins and why.\n\n{context}"
-    )
-    return _call_anthropic(prompt, api_key)
-
-
-def generate_playoff_matchup_keys(
-    team1_name: str,
-    team2_name: str,
-    team1_stats: Dict,
-    team2_stats: Dict,
-    graph_obj: MatchupGraph,
-    api_key: str,
-    seed1: int = 0,
-    seed2: int = 0,
-    series_prob: float = 0.5,
-    series_game_context: str = "",
-    roster_t1: Optional[List[str]] = None,
-    roster_t2: Optional[List[str]] = None,
-) -> str:
-    """Generate LLM-powered 'keys to the series' for a playoff matchup."""
-    _roster_section = ""
-    if roster_t1 or roster_t2:
-        _roster_section = "\n=== CURRENT ROSTERS (only reference these players) ===\n"
-        if roster_t1:
-            _roster_section += f"{team1_name}: {', '.join(roster_t1)}\n"
-        if roster_t2:
-            _roster_section += f"{team2_name}: {', '.join(roster_t2)}\n"
-
-    seed_str1 = f"#{seed1} " if seed1 else ""
-    seed_str2 = f"#{seed2} " if seed2 else ""
-
-    context_parts = [
-        f"=== PLAYOFF MATCHUP ===",
-        f"{seed_str1}{team1_name} vs {seed_str2}{team2_name}",
-        f"Projected series win probability: {team1_name} {series_prob:.0%} / {team2_name} {1-series_prob:.0%}",
-        f"\n=== {team1_name.upper()} TEAM STATS ===",
-        _fmt_team_stats(team1_name, team1_stats),
-        f"\n=== {team2_name.upper()} TEAM STATS ===",
-        _fmt_team_stats(team2_name, team2_stats),
-    ]
-    if series_game_context:
-        context_parts.append(f"\n=== SERIES GAME LOG (use this — do not invent game references) ===")
-        context_parts.append(series_game_context)
-    if _roster_section:
-        context_parts.append(_roster_section)
-    context_parts.append(f"\n=== KEY PLAYER MATCHUPS (from season matchup graph) ===")
-    context_parts.append(_fmt_cross_team_matchups(team1_name, team2_name, graph_obj))
-
-    context = "\n".join(context_parts)
-
-    series_label = f"{seed_str1}{team1_name} vs {seed_str2}{team2_name}"
-    game_log_instruction = (
-        " All game references must come from the SERIES GAME LOG section above — "
-        "do not invent scores, game numbers, or player performances."
-        if series_game_context else ""
-    )
-
-    prompt = (
-        f"Write a 'Keys to the Series' breakdown for {series_label}. "
-        f"Identify exactly 3 keys for each team — write {team1_name} first, then {team2_name}. "
-        f"For each key: state the specific tactical decision that must be made, "
-        f"explain WHY it matters physically or schematically — not just what the number says — "
-        f"and give a concrete scheme action to address it. "
-        f"Name the play type, the coverage scheme, or the rotation — not 'exploit the mismatch'. "
-        f"Ground every argument in what has actually happened in this series so far.{game_log_instruction} "
-        f"Each key should be 3-4 sentences. Complete all 6 keys before stopping.\n\n{context}"
-    )
-    return _call_anthropic(prompt, api_key)
-
-
-def _fmt_team_stats(team_name: str, stats: Dict) -> str:
-    """Format team stats dict into a readable string for LLM context."""
-    lines = [f"Team: {team_name}"]
-    stat_map = [
-        ("Off Rating",   "OFF_RATING",   ".1f"),
-        ("Def Rating",   "DEF_RATING",   ".1f"),
-        ("Net Rating",   "NET_RATING",   ".1f"),
-        ("Pace",         "PACE",         ".1f"),
-        ("eFG%",         "EFG_PCT",      ".1%"),
-        ("TOV%",         "TM_TOV_PCT",   ".1%"),
-        ("OReb%",        "OREB_PCT",     ".1%"),
-        ("TS%",          "TS_PCT",       ".1%"),
-        ("PPG",          "PTS",          ".1f"),
-        ("Opp PPG",      "OPP_PTS",      ".1f"),
-        ("W-L",          "W",            None),
-    ]
-    parts = []
-    for label, key, fmt in stat_map:
-        val = stats.get(key)
-        if val is None:
-            continue
-        if fmt is None:
-            losses = stats.get("L")
-            if losses is not None:
-                parts.append(f"Record: {int(val)}-{int(losses)}")
-        else:
-            try:
-                parts.append(f"{label}: {float(val):{fmt}}")
-            except (TypeError, ValueError):
-                pass
-    lines.extend(parts)
-    return "\n".join(lines)
-
-
-def _fmt_cross_team_matchups(team1_name: str, team2_name: str, graph_obj: MatchupGraph, top_n: int = 6) -> str:
-    """Find player matchup edges between players from team1 (offense) vs team2 (defense)
-    and vice versa, formatted for LLM context."""
-    lines = []
-    matchups_found = []
-
-    for (off_id, def_id), edge in graph_obj.matchups.items():
-        off_p = graph_obj.players.get(off_id)
-        def_p = graph_obj.players.get(def_id)
-        if not off_p or not def_p:
-            continue
-        off_team = (off_p.team or "").lower()
-        def_team = (def_p.team or "").lower()
-        t1l = team1_name.lower()
-        t2l = team2_name.lower()
-
-        t1_words = set(t1l.split())
-        t2_words = set(t2l.split())
-        off_match_t1 = any(w in off_team for w in t1_words if len(w) > 3)
-        off_match_t2 = any(w in off_team for w in t2_words if len(w) > 3)
-        def_match_t1 = any(w in def_team for w in t1_words if len(w) > 3)
-        def_match_t2 = any(w in def_team for w in t2_words if len(w) > 3)
-
-        if (off_match_t1 and def_match_t2) or (off_match_t2 and def_match_t1):
-            matchups_found.append((edge.points_per_possession, off_p.name, def_p.name, edge))
-
-    if not matchups_found:
-        return "No direct cross-team matchup data found in the graph for this season."
-
-    matchups_found.sort(key=lambda x: x[3].possessions, reverse=True)
-
-    lines.append(f"Top {min(top_n, len(matchups_found))} cross-team matchups by possessions:")
-    for ppp, off_name, def_name, edge in matchups_found[:top_n]:
-        lines.append(
-            f"  • {off_name} (off) vs {def_name} (def): "
-            f"PPP {edge.points_per_possession:.3f}, {edge.possessions:.0f} poss, "
-            f"FG {edge.fg_pct:.1%}, {edge.games_played}g"
-        )
-    return "\n".join(lines)
-
-
-def generate_game_prep_report(
-    off_players: List[Player],
-    def_players: List[Player],
-    graph_obj: MatchupGraph,
-    api_key: str,
-) -> str:
-    """Generate a pre-game matchup preparation report."""
-    sections = []
-    for off in off_players[:4]:
-        hood = graph_obj.get_offensive_neighborhood(off.name, top_n=5)
-        sections.append(f"--- {off.name} (offense) ---")
-        sections.append(_fmt_player_bio(off))
-        sections.append(_fmt_neighborhood_summary(hood, role="offense", top_n=4))
-
-    context = "\n\n".join(sections)
-    prompt = (
-        f"Write a pre-game scouting report for the upcoming matchup. "
-        f"For each offensive player listed, identify which defenders give them trouble "
-        f"and which they can exploit — and explain the physical or schematic reason why in each case. "
-        f"Close with specific scheme recommendations for the defensive game plan.\n\n" + context
-    )
-    return _call_anthropic(prompt, api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -876,49 +715,7 @@ def _sanitize(text: str) -> str:
     )
 
 
-ANALYST_SYSTEM_PROMPT = (
-    "You are a veteran NBA analyst and scout with 20 years of experience working in front offices and on coaching staffs. "
-    "You think in terms of schemes, archetypes, and physical matchups — not just statistics. "
-    "When someone asks you a basketball question, you answer it the way a scout would brief a coaching staff: "
-    "direct, specific, grounded in how the game is actually played. "
-
-    "Rules: "
-    "1. Answer the question that was actually asked. Do not reframe it, hedge it, or answer a safer version of it. "
-    "2. Lead with the core answer, not background context. The person asking already knows basketball. "
-    "3. Use scout language: scheme names, coverage types, play actions, positional archetypes, physical tools. "
-    "Drop coverage. ICE. Switching. Spain pick-and-roll. DHO. Nail help. Weak-side skip. "
-    "4. When a concept has nuance, explain the nuance — then commit to the most defensible position "
-    "and explain your reasoning. Do not present both sides equally and leave the person to decide. "
-    "If the question asks for a preference, recommendation, or comparative judgment: "
-    "your opening sentence IS the answer. Every sentence after it defends or deepens that answer. "
-    "Your conclusion must agree with your opening — never reverse your position in the final paragraph. "
-    "5. Cite real players or real teams as examples where they make the argument sharper. "
-    "6. Anchor every analytical claim with a specific statistic in parentheses. "
-    "Narrative without numbers is opinion, not analysis. "
-    "Simple decision rule for every stat: "
-    "STEP 1 — Scan the VERIFIED CAREER DATA at the top of the prompt. "
-    "If the number is there, cite the exact figure. Never say a stat is unavailable if it appears in that table. "
-    "STEP 2 — If the number genuinely is not in the data, state the claim qualitatively — no estimates, no approximations. "
-    "STEP 3 — Never be vague ('mid-30s range', 'roughly X', 'around Y') when the exact figure is in the data. "
-    "Vague numbers are worse than no numbers. "
-    "The data section is the only permitted source of specific statistics. "
-    "7. All player teams, head coaches, and roster facts must come from the injected data only — "
-    "never from training knowledge, which may be a year or more out of date. "
-    "If a player's team or a team's head coach is not listed in the data, do not name one. "
-    "CRITICAL: Do not reference specific players who are not named in the injected data or the user's question. "
-    "Players change teams constantly via trade and free agency; your training knowledge of who plays for which team "
-    "is definitively stale. If you want to cite a player-team example and that player is not in the injected data, "
-    "describe the archetype instead (e.g., 'a long switching wing' rather than naming a specific player on a specific team). "
-    "When citing specific game examples or playoff matchups, use only data from the injected game logs and box scores — "
-    "never recall games or series from training data. "
-    "8. Write in complete paragraphs. No bullet points. No numbered lists. "
-    "No hedging phrases like 'it depends', 'great question', 'certainly', or 'as an AI.' "
-    "9. Target 250-400 words. Long enough to be substantive, short enough to be useful in a film session."
-)
-
-
-def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[str] = None, max_tokens: int = 2048) -> str:
-    system = system_override if system_override else SYSTEM_PROMPT
+def _call_anthropic(user_prompt: str, api_key: str, max_tokens: int = 2048) -> str:
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
@@ -926,7 +723,7 @@ def _call_anthropic(user_prompt: str, api_key: str, system_override: Optional[st
             max_tokens=max_tokens,
             system=[{
                 "type": "text",
-                "text": _sanitize(system),
+                "text": _sanitize(SYSTEM_PROMPT),
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[

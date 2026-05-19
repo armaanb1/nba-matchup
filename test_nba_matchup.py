@@ -1,13 +1,14 @@
 """
 test_nba_matchup.py
 ===================
-Test suite for the NBA Matchup Network project.
+Test suite for The Matchup Lab project.
 
-Covers all four interaction modes plus supporting data models:
+Covers all interaction modes plus supporting data models:
   Mode 1 — Matchup Lookup          (MatchupGraph.get_matchup)
   Mode 2 — Player Profile           (get_offensive/defensive_neighborhood)
-  Mode 3 — Defensive Similarity     (find_similar_defenders)
-  Mode 4 — Narrative Drift / CounterPoint (compute_drift)
+  Mode 3 — Comparable Players       (find_similar_defenders, find_similar_scorers)
+  Mode 4 — Archetype Classification (classify_scorer, classify_defender)
+  Mode 5 — SQLite caching layer     (db.py)
 
 All tests use synthetic data — no real API calls are made.
 
@@ -23,13 +24,12 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from models import MatchupEdge, MatchupGraph, Player
-from data_loader import _safe_float, _safe_int, _parse_nba_result_set
-from counterpoint import (
-    compute_drift,
-    DRIFT_THRESHOLD,
-    MIN_SEASONS_HISTORY,
+from models import (
+    MatchupEdge, MatchupGraph, Player,
+    OffensiveArchetype, DefensiveRole,
+    classify_scorer, classify_defender,
 )
+from data_loader import _safe_float, _safe_int, _parse_nba_result_set
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -742,159 +742,235 @@ class TestDataLoaderHelpers(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9. Mode 4 — Narrative Drift / CounterPoint (compute_drift)
+# 9. Mode 4 — Archetype Classification
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _career_row(season_id, gp=70, pts=20.0, fgm=7, fga=15,
-                fg3m=2, fg3a=5, fg3_pct=0.40, fta=4,
-                tov=2.0, ast=5.0):
-    """Build one synthetic season row with realistic column names."""
-    return {
-        "SEASON_ID":       season_id,
-        "TEAM_ABBREVIATION": "LAL",
-        "GP":  gp,
-        "PTS": pts,
-        "FGM": fgm, "FGA": fga,
-        "FG3M": fg3m, "FG3A": fg3a, "FG3_PCT": fg3_pct,
-        "FTA": fta,
-        "TOV": tov,
-        "AST": ast,
+def _make_scorer_stats(**overrides) -> dict:
+    """Return a minimal scorer stats dict with all play-type fields populated."""
+    defaults = {
+        "scoring_possessions": 400,
+        "pnr_bh_freq":   0.10,
+        "iso_freq":      0.05,
+        "post_freq":     0.05,
+        "roll_freq":     0.05,
+        "spot_freq":     0.10,
+        "off_screen_freq": 0.03,
+        "handoff_freq":  0.02,
+        "cut_freq":      0.05,
+        "putback_freq":  0.03,
+        "drives_per75":  10.0,
+        "fg3a_rate":     0.30,
+        "paint_touches_per75": 12.0,
+        "ast_per75":     5.0,
+        "position_pct_c":  0.0,
+        "position_pct_pf": 0.0,
+        "position": "G",
     }
+    defaults.update(overrides)
+    return defaults
 
 
-class TestComputeDrift(unittest.TestCase):
+def _make_pool(base: dict, n: int = 20) -> list:
+    """Return a pool of n synthetic player stat dicts with slight variance."""
+    import random
+    random.seed(42)
+    pool = []
+    for i in range(n):
+        p = dict(base)
+        p["drives_per75"] = base["drives_per75"] * (0.5 + random.random())
+        p["fg3a_rate"]    = base["fg3a_rate"]    * (0.5 + random.random())
+        p["ast_per75"]    = base["ast_per75"]    * (0.5 + random.random())
+        pool.append(p)
+    return pool
 
-    # ── edge cases ────────────────────────────────────────────────────────────
 
-    def test_empty_dataframe_returns_none(self):
-        result = compute_drift(1, pd.DataFrame(), "2025-26")
+class TestOffensiveArchetypeClassifier(unittest.TestCase):
+
+    def test_returns_none_below_possession_minimum(self):
+        stats = _make_scorer_stats(scoring_possessions=100)
+        result = classify_scorer(stats, [stats])
         self.assertIsNone(result)
 
-    def test_insufficient_history_returns_none(self):
-        """Only one prior season → below MIN_SEASONS_HISTORY."""
-        df = _make_career_df([
-            _career_row("2024-25"),
-            _career_row("2025-26"),
-        ])
-        result = compute_drift(1, df, "2025-26")
+    def test_returns_none_when_no_play_type_data(self):
+        stats = {"scoring_possessions": 400, "position": "G"}
+        result = classify_scorer(stats, [stats])
         self.assertIsNone(result)
 
-    def test_exactly_min_history_seasons(self):
-        """Exactly MIN_SEASONS_HISTORY prior seasons should not return None."""
-        # Need variance across seasons or std=0 causes the engine to return None.
-        rows = [
-            _career_row("2020-21", pts=14.0, fg3_pct=0.33),
-            _career_row("2021-22", pts=18.0, fg3_pct=0.37),
-            _career_row("2022-23", pts=22.0, fg3_pct=0.41),  # current
-        ]
-        df = _make_career_df(rows)
-        result = compute_drift(1, df, "2022-23", player_name="Test Player")
-        # Should return a dict (flagged or stable), not None
-        self.assertIsNotNone(result)
+    def test_shot_creator_classification(self):
+        """High ISO + high drives + pnr_bh → Shot Creator."""
+        pool = _make_pool(_make_scorer_stats())
+        # Make target clearly a shot creator
+        target = _make_scorer_stats(
+            pnr_bh_freq=0.20, iso_freq=0.22,
+            drives_per75=99.0,   # guarantee 80th pctile in pool
+        )
+        pool.append(target)
+        result = classify_scorer(target, pool)
+        self.assertEqual(result, OffensiveArchetype.SHOT_CREATOR)
 
-    # ── flagged result (player improved significantly) ─────────────────────────
+    def test_stationary_shooter_classification(self):
+        """High 3PA rate, low drives, low off_screen → Shooter bucket."""
+        pool = _make_pool(_make_scorer_stats())
+        target = _make_scorer_stats(
+            fg3a_rate=0.95,    # high percentile in pool
+            drives_per75=1.0,
+            off_screen_freq=0.02,
+            handoff_freq=0.01,
+            iso_freq=0.03,
+            pnr_bh_freq=0.04,
+            cut_freq=0.03,
+            putback_freq=0.02,
+        )
+        pool.append(target)
+        result = classify_scorer(target, pool)
+        self.assertIn(result, (
+            OffensiveArchetype.STATIONARY_SHOOTER,
+            OffensiveArchetype.MOVEMENT_SHOOTER,
+            OffensiveArchetype.OFF_SCREEN_SHOOTER,
+        ))
 
-    def test_flagged_when_ppp_far_above_career(self):
-        """
-        Build a career where PPG varied naturally around ~12, then spikes to 30.
-        The large z-score should trigger a 'better_than_reputation' flag.
-        """
-        # Small natural variance keeps std > 0 so z-scores are computable.
-        base_pts = [11.5, 12.0, 12.5, 11.8, 12.2]
-        rows = [
-            _career_row(f"201{i}-1{i+1}", pts=base_pts[i], fg3_pct=0.34 + 0.01 * i)
-            for i in range(5)
-        ]
-        rows.append(_career_row("2025-26", pts=30.0, fg3_pct=0.42))  # big spike
-        df = _make_career_df(rows)
-        result = compute_drift(1, df, "2025-26", player_name="Test Player")
-        self.assertIsNotNone(result)
-        if result and result.get("flagged"):
-            self.assertEqual(result["flag"], "better_than_reputation")
+    def test_roll_cut_big_classification(self):
+        """Low fg3a_rate, low post, big position → Roll & Cut Big."""
+        pool_stats = _make_scorer_stats(
+            position_pct_c=0.0, position_pct_pf=0.0,
+        )
+        pool = _make_pool(pool_stats)
+        # Override pool so Bigs have variety in fg3a_rate
+        for p in pool:
+            p["position_pct_c"] = 0.50
+            p["roll_freq"] = 0.15
+            p["cut_freq"]  = 0.10
+            p["putback_freq"] = 0.10
+            p["post_freq"] = 0.10
 
-    def test_flagged_when_shooting_drops(self):
-        """
-        TS% dramatically below career average → 'worse_than_reputation'.
-        Small natural variance in career rows keeps std > 0.
-        """
-        # Natural variance: pts oscillates around 22, fta oscillates slightly
-        pts_seq  = [22.0, 23.5, 21.5, 24.0, 22.5]
-        fta_seq  = [4,    5,    3,    5,    4   ]
-        rows = [
-            _career_row(f"201{i}-1{i+1}",
-                        pts=pts_seq[i], fgm=9, fga=14, fg3m=3, fg3a=7,
-                        fg3_pct=0.43, fta=fta_seq[i])
-            for i in range(5)
-        ]
-        # Current season: dramatic efficiency collapse
-        rows.append(_career_row("2025-26", pts=9.0, fgm=3, fga=18, fg3m=0,
-                                 fg3a=2, fg3_pct=0.0, fta=2))
-        df = _make_career_df(rows)
-        result = compute_drift(1, df, "2025-26", player_name="Test Player")
-        # Either flagged or stable — result must not be None
-        self.assertIsNotNone(result)
+        target = _make_scorer_stats(
+            position_pct_c=0.70,
+            roll_freq=0.25, cut_freq=0.15, putback_freq=0.05, post_freq=0.03,
+            fg3a_rate=0.02,   # well below any percentile threshold
+            iso_freq=0.02, pnr_bh_freq=0.03,
+        )
+        pool.append(target)
+        result = classify_scorer(target, pool)
+        self.assertIn(result, (
+            OffensiveArchetype.ROLL_AND_CUT_BIG,
+            OffensiveArchetype.POST_SCORER,
+            OffensiveArchetype.STRETCH_BIG,
+            OffensiveArchetype.VERSATILE_BIG,
+        ))
 
-    # ── stable result ─────────────────────────────────────────────────────────
-
-    def test_stable_when_stats_consistent(self):
-        """
-        Stats with very low variance (below drift threshold) → flagged=False.
-        Tiny season-to-season changes keep std > 0 so z-scores are computed.
-        """
-        rows = [
-            _career_row(f"201{i}-1{i+1}",
-                        pts=20.0 + 0.2 * i,
-                        fg3_pct=0.380 + 0.003 * i,
-                        fta=4 + (i % 2))
-            for i in range(6)
-        ]
-        df = _make_career_df(rows)
-        result = compute_drift(1, df, "2015-16", player_name="Test Player")
-        # With natural but small variance the engine must return a dict
-        self.assertIsNotNone(result)
-        if isinstance(result, dict):
-            self.assertIn("flagged", result)
-
-    def test_stable_result_structure(self):
-        """
-        Stable result must contain expected keys.
-        player_name must be non-empty so the narrative generator doesn't crash.
-        """
-        rows = []
-        for i in range(6):
-            rows.append(_career_row(f"202{i}-2{i+1}",
-                                    pts=20.0 + 0.2 * i,
-                                    fg3_pct=0.38 + 0.005 * i,
-                                    fta=4 + (i % 2)))
-        df = _make_career_df(rows)
-        result = compute_drift(99, df, "2025-26", player_name="Test Player")
+    def test_result_is_offensive_archetype_instance(self):
+        pool = _make_pool(_make_scorer_stats())
+        target = _make_scorer_stats(pnr_bh_freq=0.20, iso_freq=0.22, drives_per75=99.0)
+        pool.append(target)
+        result = classify_scorer(target, pool)
         if result is not None:
-            self.assertIn("player_id", result)
-            self.assertIn("drift_scores", result)
+            self.assertIsInstance(result, OffensiveArchetype)
 
-    def test_result_contains_player_id(self):
-        rows = [
-            _career_row(f"202{i}-2{i+1}", pts=15.0 + i, fg3_pct=0.35 + 0.01 * i)
-            for i in range(5)
-        ]
-        df = _make_career_df(rows)
-        result = compute_drift(42, df, "2024-25", player_name="Test Player")
+
+class TestDefensiveRoleClassifier(unittest.TestCase):
+
+    def test_returns_none_when_no_position_data(self):
+        stats = {"height_inches": 78}
+        result = classify_defender(stats, [stats])
+        self.assertIsNone(result)
+
+    def test_anchor_big_classification(self):
+        """Low versatility, high time vs bigs → Anchor Big."""
+        pool = [{"pct_time_vs_c": 0.30, "pct_time_vs_pf": 0.30,
+                 "matchup_difficulty": 0.0, "def_positional_versatility": 0.3,
+                 "rim_time_pct": 0.5, "off_ball_help_rate": 0.4,
+                 "height_inches": 84}
+                for _ in range(20)]
+        target = {
+            "pct_time_vs_c": 0.40, "pct_time_vs_pf": 0.25,
+            "matchup_difficulty": -0.5,    # below median
+            "def_positional_versatility": 0.1,  # below 40th pctile
+            "rim_time_pct": 0.6,
+            "off_ball_help_rate": 0.2,
+            "height_inches": 84,
+            "pct_time_vs_pg": 0.05,
+            "pct_time_vs_sg": 0.05,
+            "pct_time_vs_sf": 0.10,
+            "pct_time_vs_pf": 0.20,
+            "pct_time_vs_c": 0.60,
+            "pct_time_vs_shot_creator": 0.02,
+            "pct_time_vs_primary_bh": 0.03,
+            "pct_time_vs_slasher": 0.03,
+            "pct_time_vs_off_screen": 0.02,
+            "pct_time_vs_movement_shooter": 0.02,
+            "pct_time_vs_stationary_shooter": 0.03,
+        }
+        pool = list(pool) + [target]
+        result = classify_defender(target, pool)
+        self.assertIn(result, (DefensiveRole.ANCHOR_BIG, DefensiveRole.MOBILE_BIG))
+
+    def test_result_is_defensive_role_instance(self):
+        target = {
+            "pct_time_vs_pg": 0.40, "pct_time_vs_sg": 0.20,
+            "pct_time_vs_sf": 0.10, "pct_time_vs_pf": 0.10,
+            "pct_time_vs_c": 0.05,
+            "matchup_difficulty": 1.0,
+            "def_positional_versatility": 0.5,
+            "rim_time_pct": 0.1,
+            "off_ball_help_rate": 0.3,
+            "height_inches": 75,
+            "pct_time_vs_shot_creator": 0.15,
+            "pct_time_vs_primary_bh": 0.15,
+            "pct_time_vs_slasher": 0.10,
+            "pct_time_vs_off_screen": 0.05,
+            "pct_time_vs_movement_shooter": 0.05,
+            "pct_time_vs_stationary_shooter": 0.05,
+        }
+        pool = [target] * 20
+        result = classify_defender(target, pool)
         if result is not None:
-            self.assertEqual(result.get("player_id"), 42)
+            self.assertIsInstance(result, DefensiveRole)
 
-    # ── drift_scores structure ────────────────────────────────────────────────
 
-    def test_drift_scores_are_numeric(self):
-        rows = [
-            _career_row(f"202{i}-2{i+1}", pts=15.0 + i, fg3_pct=0.35 + 0.01 * i)
-            for i in range(5)
-        ]
-        df = _make_career_df(rows)
-        result = compute_drift(1, df, "2024-25", player_name="Test Player")
-        if result and "drift_scores" in result:
-            for stat, z in result["drift_scores"].items():
-                self.assertIsInstance(z, float)
-                self.assertFalse(math.isnan(z), f"NaN drift score for {stat}")
+# ──────────────────────────────────────────────────────────────────────────────
+# 10. Mode 3 — find_similar_scorers
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestFindSimilarScorers(unittest.TestCase):
+
+    def setUp(self):
+        self.graph = _build_test_graph()
+
+    def test_returns_list(self):
+        results = self.graph.find_similar_scorers("Alpha")
+        self.assertIsInstance(results, list)
+
+    def test_excludes_self(self):
+        results = self.graph.find_similar_scorers("Alpha", top_n=10)
+        scorers = [r["scorer"] for r in results]
+        self.assertNotIn("Alpha", scorers)
+
+    def test_sorted_descending_by_combined_score(self):
+        results = self.graph.find_similar_scorers("Alpha", top_n=10)
+        if len(results) >= 2:
+            scores = [r["combined_score"] for r in results]
+            self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_combined_score_bounded(self):
+        results = self.graph.find_similar_scorers("Alpha", top_n=10)
+        for r in results:
+            self.assertGreaterEqual(r["combined_score"], 0.0)
+            self.assertLessEqual(r["combined_score"], 1.0 + 1e-9)
+
+    def test_result_contains_expected_fields(self):
+        results = self.graph.find_similar_scorers("Alpha", top_n=5)
+        for r in results:
+            for field in ("scorer", "combined_score", "jaccard",
+                          "ppp_delta_corr", "shared_opponents"):
+                self.assertIn(field, r)
+
+    def test_unknown_scorer_returns_empty(self):
+        results = self.graph.find_similar_scorers("Nobody")
+        self.assertEqual(results, [])
+
+    def test_top_n_limit_respected(self):
+        results = self.graph.find_similar_scorers("Alpha", top_n=1)
+        self.assertLessEqual(len(results), 1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

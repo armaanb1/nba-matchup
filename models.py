@@ -8,13 +8,313 @@ Classes:
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
 import pandas as pd
+
+
+# ---------------------------------------------------------------------------
+# Archetype enums
+# ---------------------------------------------------------------------------
+
+class OffensiveArchetype(str, Enum):
+    SHOT_CREATOR         = "Shot Creator"
+    PRIMARY_BH           = "Primary Ball Handler"
+    SECONDARY_BH         = "Secondary Ball Handler"
+    SLASHER              = "Slasher"
+    OFF_SCREEN_SHOOTER   = "Off Screen Shooter"
+    MOVEMENT_SHOOTER     = "Movement Shooter"
+    STATIONARY_SHOOTER   = "Stationary Shooter"
+    ATHLETIC_FINISHER    = "Athletic Finisher"
+    VERSATILE_BIG        = "Versatile Big"
+    STRETCH_BIG          = "Stretch Big"
+    POST_SCORER          = "Post Scorer"
+    ROLL_AND_CUT_BIG     = "Roll & Cut Big"
+
+
+class DefensiveRole(str, Enum):
+    POINT_OF_ATTACK  = "Point of Attack"
+    WING_STOPPER     = "Wing Stopper"
+    CHASER           = "Chaser"
+    HELPER           = "Helper"
+    ANCHOR_BIG       = "Anchor Big"
+    MOBILE_BIG       = "Mobile Big"
+    LOW_ACTIVITY     = "Low Activity"
+
+
+# ---------------------------------------------------------------------------
+# Archetype classifier helpers
+# ---------------------------------------------------------------------------
+
+def _pctile(values: List[Optional[float]], pct: float) -> float:
+    """Return the pct-th percentile of values, ignoring None."""
+    arr = np.array([v for v in values if v is not None], dtype=float)
+    return float(np.percentile(arr, pct)) if len(arr) > 0 else 0.0
+
+
+def _is_big_by_position(position_str: Optional[str]) -> bool:
+    """Proxy for center/PF when explicit position-time data is unavailable."""
+    if not position_str:
+        return False
+    pos = position_str.upper().replace(" ", "")
+    return pos in ("C", "F-C", "C-F", "FC", "CF")
+
+
+def classify_scorer(
+    stats: Dict,
+    player_pool: List[Dict],
+) -> Optional[OffensiveArchetype]:
+    """
+    Classify an offensive player's archetype from play-type frequencies and tracking.
+
+    stats keys (all optional):
+        scoring_possessions, pnr_bh_freq, iso_freq, post_freq, roll_freq, spot_freq,
+        off_screen_freq, handoff_freq, cut_freq, putback_freq,
+        drives_per75, fg3a_rate, paint_touches_per75, ast_per75,
+        position_pct_c, position_pct_pf, position, avg_speed,
+        catch_shoot_pct_of_3pa
+
+    player_pool: list of stat dicts for all qualifying players (same keys).
+    Returns None when critical play-type data is missing or sample < 250 poss.
+
+    All percentile thresholds are computed within the current season's qualifying
+    pool — no hardcoded absolute values.
+    """
+    scoring_poss = stats.get("scoring_possessions")
+    if scoring_poss is not None and scoring_poss < 250:
+        return None
+
+    pnr_bh      = stats.get("pnr_bh_freq")
+    iso         = stats.get("iso_freq")
+    post        = stats.get("post_freq")
+    roll        = stats.get("roll_freq")
+    cut         = stats.get("cut_freq")
+    putback     = stats.get("putback_freq")
+    off_screen  = stats.get("off_screen_freq")
+    handoff     = stats.get("handoff_freq")
+
+    if all(v is None for v in [pnr_bh, iso, post, roll, cut, putback, off_screen, handoff]):
+        return None  # no play-type data
+
+    pnr_bh     = pnr_bh     or 0.0
+    iso        = iso        or 0.0
+    post       = post       or 0.0
+    roll       = roll       or 0.0
+    cut        = cut        or 0.0
+    putback    = putback    or 0.0
+    off_screen = off_screen or 0.0
+    handoff    = handoff    or 0.0
+    spot       = stats.get("spot_freq") or 0.0
+
+    drives_per75    = stats.get("drives_per75")    or 0.0
+    fg3a_rate       = stats.get("fg3a_rate")       or 0.0
+    paint_touches   = stats.get("paint_touches_per75") or 0.0
+    ast_per75       = stats.get("ast_per75")       or 0.0
+    avg_speed       = stats.get("avg_speed")
+    cs_pct          = stats.get("catch_shoot_pct_of_3pa")
+
+    position_pct_c  = stats.get("position_pct_c")
+    position_pct_pf = stats.get("position_pct_pf")
+    position_str    = stats.get("position", "")
+
+    qualifying = [
+        p for p in player_pool
+        if p.get("scoring_possessions") is None or (p.get("scoring_possessions") or 0) >= 250
+    ]
+
+    def _is_pool_big(p: Dict) -> bool:
+        pct_c  = p.get("position_pct_c")
+        pct_pf = p.get("position_pct_pf")
+        if pct_c is not None or pct_pf is not None:
+            pos_big = (pct_c or 0) >= 0.30 or (pct_pf or 0) >= 0.50
+        else:
+            pos_big = _is_big_by_position(p.get("position", ""))
+        big_mix = (
+            (p.get("roll_freq") or 0) + (p.get("cut_freq") or 0) +
+            (p.get("putback_freq") or 0) + (p.get("post_freq") or 0)
+        )
+        return pos_big and big_mix >= 0.35
+
+    big_pool = [p for p in qualifying if _is_pool_big(p)]
+    gw_pool  = [p for p in qualifying if not _is_pool_big(p)]
+
+    if position_pct_c is not None or position_pct_pf is not None:
+        pct_c  = position_pct_c  or 0.0
+        pct_pf = position_pct_pf or 0.0
+        is_big_pos = pct_c >= 0.30 or pct_pf >= 0.50
+    else:
+        is_big_pos = _is_big_by_position(position_str)
+
+    big_scoring_mix = roll + cut + putback + post
+    is_big = is_big_pos and big_scoring_mix >= 0.35
+
+    if is_big:
+        big_fg3a_vals = [p.get("fg3a_rate") for p in big_pool]
+        p35_big = _pctile(big_fg3a_vals, 35)
+        p25_big = _pctile(big_fg3a_vals, 25)
+        active = sum([post >= 0.01, roll >= 0.01, cut >= 0.01, putback >= 0.01, spot >= 0.01])
+
+        if fg3a_rate >= p35_big and post >= 0.12 and active >= 3:
+            return OffensiveArchetype.VERSATILE_BIG
+        if fg3a_rate >= p35_big and post < 0.12:
+            return OffensiveArchetype.STRETCH_BIG
+        if fg3a_rate < p25_big and post >= 0.18:
+            return OffensiveArchetype.POST_SCORER
+        return OffensiveArchetype.ROLL_AND_CUT_BIG
+
+    all_drives = [p.get("drives_per75") for p in qualifying]
+    all_paint  = [p.get("paint_touches_per75") for p in qualifying]
+    all_ast    = [p.get("ast_per75") for p in qualifying]
+    gw_fg3a    = [p.get("fg3a_rate") for p in gw_pool]
+    gw_drives  = [p.get("drives_per75") for p in gw_pool]
+    all_speeds = [p.get("avg_speed") for p in gw_pool]
+    all_cs     = [p.get("catch_shoot_pct_of_3pa") for p in gw_pool]
+
+    p80_drives_lw   = _pctile(all_drives, 80)
+    p50_drives_gw   = _pctile(gw_drives, 50)
+    p75_initiator   = _pctile([v for v in (all_ast + all_paint) if v is not None], 75)
+    p45_fg3a_gw     = _pctile(gw_fg3a, 45)
+    p30_fg3a_gw     = _pctile(gw_fg3a, 30)
+    p50_speed       = _pctile(all_speeds, 50)
+    p50_cs          = _pctile(all_cs, 50)
+
+    initiator_high = ast_per75 >= p75_initiator or paint_touches >= p75_initiator
+
+    # Priority: Shot Creator > Primary BH > Slasher > Secondary BH >
+    #           Athletic Finisher > Off Screen > Movement > Stationary
+    if (pnr_bh + iso) >= 0.25 and iso >= 0.18 and drives_per75 >= p80_drives_lw:
+        return OffensiveArchetype.SHOT_CREATOR
+
+    if (pnr_bh + iso) >= 0.25 and iso < 0.18 and initiator_high:
+        return OffensiveArchetype.PRIMARY_BH
+
+    if drives_per75 >= p80_drives_lw and fg3a_rate < p30_fg3a_gw:
+        return OffensiveArchetype.SLASHER
+
+    if (pnr_bh + iso) >= 0.20 and iso < 0.18 and not initiator_high:
+        return OffensiveArchetype.SECONDARY_BH
+
+    if (cut + putback) >= 0.15 and drives_per75 < p50_drives_gw:
+        return OffensiveArchetype.ATHLETIC_FINISHER
+
+    if fg3a_rate >= p45_fg3a_gw and (off_screen + handoff) >= 0.12:
+        return OffensiveArchetype.OFF_SCREEN_SHOOTER
+
+    if fg3a_rate >= p45_fg3a_gw:
+        if avg_speed is not None and avg_speed >= p50_speed:
+            return OffensiveArchetype.MOVEMENT_SHOOTER
+        if cs_pct is not None and cs_pct >= p50_cs:
+            return OffensiveArchetype.STATIONARY_SHOOTER
+        return OffensiveArchetype.MOVEMENT_SHOOTER  # default when movement data unavailable
+
+    return None  # below all thresholds — not enough signal
+
+
+def classify_defender(
+    stats: Dict,
+    player_pool: List[Dict],
+) -> Optional[DefensiveRole]:
+    """
+    Classify a defensive player's role from matchup assignment and tracking data.
+
+    stats keys (all optional):
+        pct_time_vs_pg, pct_time_vs_sg, pct_time_vs_sf, pct_time_vs_pf, pct_time_vs_c,
+        pct_time_vs_shot_creator, pct_time_vs_primary_bh, pct_time_vs_secondary_bh,
+        pct_time_vs_slasher, pct_time_vs_off_screen, pct_time_vs_movement_shooter,
+        pct_time_vs_stationary_shooter, pct_time_vs_athletic_finisher,
+        pct_time_vs_versatile_big, pct_time_vs_post_scorer, pct_time_vs_stretch_big,
+        pct_time_vs_roll_cut_big,
+        matchup_difficulty,            — pre-computed z-score (see spec)
+        def_positional_versatility,    — entropy of time at each position
+        rim_time_pct,                  — restricted area FGA defended per 75
+        off_ball_help_rate,            — deflections + off-ball steals + rim tags per 75
+        height_inches, position
+
+    Returns None when positional-assignment data is entirely missing.
+    All percentile thresholds computed within the current season's qualifying pool.
+    """
+    vs_c   = stats.get("pct_time_vs_c")   or 0.0
+    vs_pf  = stats.get("pct_time_vs_pf")  or 0.0
+    vs_pg  = stats.get("pct_time_vs_pg")  or 0.0
+
+    if all(stats.get(k) is None for k in (
+        "pct_time_vs_pg", "pct_time_vs_sg", "pct_time_vs_sf",
+        "pct_time_vs_pf", "pct_time_vs_c", "matchup_difficulty",
+    )):
+        return None
+
+    rim_time       = stats.get("rim_time_pct")              or 0.0
+    matchup_diff   = stats.get("matchup_difficulty")        or 0.0
+    pos_versatility = stats.get("def_positional_versatility") or 0.0
+    help_rate      = stats.get("off_ball_help_rate")        or 0.0
+    height_in      = stats.get("height_inches")
+
+    pool = player_pool or []
+    rim_vals       = [p.get("rim_time_pct") for p in pool]
+    diff_vals      = [p.get("matchup_difficulty") for p in pool]
+    vers_vals      = [p.get("def_positional_versatility") for p in pool]
+    help_vals      = [p.get("off_ball_help_rate") for p in pool]
+
+    p80_rim    = _pctile(rim_vals, 80)
+    p60_diff   = _pctile(diff_vals, 60)
+    p50_diff   = _pctile(diff_vals, 50)
+    p40_diff   = _pctile(diff_vals, 40)
+    p50_vers   = _pctile(vers_vals, 50)
+    p40_vers   = _pctile(vers_vals, 40)
+    p60_help   = _pctile(help_vals, 60)
+
+    # Big Gate
+    big_gate = (vs_c + vs_pf >= 0.55) or (rim_time >= p80_rim)
+
+    if big_gate:
+        if pos_versatility < p40_vers and matchup_diff < p50_diff:
+            return DefensiveRole.ANCHOR_BIG
+        return DefensiveRole.MOBILE_BIG
+
+    vs_primary_bh   = stats.get("pct_time_vs_primary_bh")   or 0.0
+    vs_shot_creator = stats.get("pct_time_vs_shot_creator")  or 0.0
+    vs_slasher      = stats.get("pct_time_vs_slasher")       or 0.0
+    vs_off_screen   = stats.get("pct_time_vs_off_screen")    or 0.0
+    vs_movement     = stats.get("pct_time_vs_movement_shooter") or 0.0
+    vs_stationary   = stats.get("pct_time_vs_stationary_shooter") or 0.0
+
+    h = height_in or 78
+
+    # Priority: Wing Stopper > Point of Attack > Chaser > Helper > Low Activity
+    if (
+        (vs_shot_creator + vs_primary_bh + vs_slasher) >= 0.35
+        and matchup_diff >= p60_diff
+        and h >= 76
+        and pos_versatility >= p50_vers
+    ):
+        return DefensiveRole.WING_STOPPER
+
+    if (
+        (vs_pg + vs_primary_bh + vs_shot_creator) >= 0.40
+        and matchup_diff >= p60_diff
+        and h < 79
+    ):
+        return DefensiveRole.POINT_OF_ATTACK
+
+    if (
+        (vs_off_screen + vs_movement + vs_stationary) >= 0.35
+        and matchup_diff < p60_diff
+    ):
+        return DefensiveRole.CHASER
+
+    if help_rate >= p60_help and matchup_diff < p50_diff:
+        return DefensiveRole.HELPER
+
+    if matchup_diff < p40_diff and pos_versatility < p40_vers and rim_time < _pctile(rim_vals, 40):
+        return DefensiveRole.LOW_ACTIVITY
+
+    return DefensiveRole.LOW_ACTIVITY  # default fallback
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +386,21 @@ class Player:
     avg_ppp_def: Optional[float] = None   # avg PPP allowed on defense
     off_matchup_count: int = 0
     def_matchup_count: int = 0
+
+    # Archetype labels (computed by classify_scorer / classify_defender)
+    off_archetype: Optional[OffensiveArchetype] = None
+    def_role: Optional[DefensiveRole] = None
+
+    @property
+    def height_inches(self) -> Optional[int]:
+        """Convert height string '6-8' → 80 inches."""
+        if not self.height:
+            return None
+        try:
+            ft, inches = self.height.split("-")
+            return int(ft) * 12 + int(inches)
+        except (ValueError, AttributeError):
+            return None
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Player) and self.player_id == other.player_id
@@ -423,18 +738,77 @@ class MatchupGraph:
         return rows[:top_n]
 
     # ------------------------------------------------------------------
-    # Interaction Mode 3 — Defensive Similarity
+    # Interaction Mode 3 — Similarity (Defenders and Scorers)
     # ------------------------------------------------------------------
+
+    def _build_zscored_stat_vec(
+        self,
+        pid: int,
+        stat_weights: List[Tuple[str, float]],
+        pop_stats: Dict[str, Tuple[float, float]],  # stat → (mean, std)
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Build a z-scored stat vector for player pid using precomputed population stats.
+        Returns (z_vec, weight_vec) or None if player not found.
+        Logs a warning if more than 3 stats are missing.
+        """
+        p = self.players.get(pid)
+        if not p:
+            return None
+        vec, weights, missing = [], [], 0
+        for stat, w in stat_weights:
+            mean, std = pop_stats.get(stat, (None, None))
+            val = getattr(p, stat, None)
+            if val is None or mean is None:
+                vec.append(0.0)
+                missing += 1
+            else:
+                vec.append((val - mean) / std)
+            weights.append(w)
+        if missing > 3:
+            logging.warning("Player %d: %d stats missing from tier vector", pid, missing)
+        return np.array(vec, dtype=float), np.array(weights, dtype=float)
+
+    @staticmethod
+    def _weighted_cosine(va: np.ndarray, wa: np.ndarray,
+                         vb: np.ndarray, wb: np.ndarray) -> float:
+        """Weighted cosine similarity: scale each element by sqrt(w), then cosine."""
+        a = va * np.sqrt(wa)
+        b = vb * np.sqrt(wb)
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        if na < 1e-10 or nb < 1e-10:
+            return 0.0
+        return float(np.dot(a, b) / (na * nb))
+
+    def _physical_sim(self, pid_a: int, pid_b: int) -> float:
+        """Height/weight/position similarity scaled to [0, 1]."""
+        pa, pb = self.players.get(pid_a), self.players.get(pid_b)
+        if not pa or not pb:
+            return 0.0
+        ha = pa.height_inches or 78
+        hb = pb.height_inches or 78
+        wa = pa.weight or 220
+        wb = pb.weight or 220
+        h_diff = abs(ha - hb) / 12.0    # normalised over ~1 ft range
+        w_diff = abs(wa - wb) / 50.0    # normalised over ~50 lb range
+        hw_sim = max(0.0, 1.0 - 0.5 * h_diff - 0.5 * w_diff)
+        pos_a = (pa.position or "").upper()
+        pos_b = (pb.position or "").upper()
+        pos_sim = 1.0 if pos_a == pos_b else (0.5 if pos_a and pos_b and
+                                               (pos_a[0] == pos_b[0]) else 0.0)
+        return 0.6 * hw_sim + 0.4 * pos_sim
 
     def find_similar_defenders(
         self, defender_name: str, top_n: int = 10
     ) -> List[Dict]:
         """
-        Graph-based defensive similarity:
-          - Jaccard similarity (shared offensive opponents)
-          - Cosine similarity of PPP vectors over shared opponents
-          - Pearson correlation over shared opponents
-        Combined = 0.4 × Jaccard + 0.3 × Cosine + 0.3 × (Corr + 1) / 2
+        MPS_def = 0.20 × Jaccard(shared opponents)
+                + 0.15 × PPP_delta_correlation
+                + 0.15 × shot_profile_similarity  (imputed when unavailable)
+                + 0.15 × physical_archetype_sim
+                + 0.35 × defensive_tier_sim
+
+        defensive_tier_sim = weighted cosine similarity of z-scored stat vectors.
         """
         target_id = self.find_player_id(defender_name)
         if target_id is None:
@@ -449,10 +823,41 @@ class MatchupGraph:
             return []
 
         target_set = set(target_opps)
-        all_defenders = {di for (_, di) in self.matchups}
+        all_def_ids = list({di for (_, di) in self.matchups})
+
+        # Stat weights within the 0.35 defensive_tier_sim component
+        DEF_TIER = [
+            ("epm_def",     0.075),
+            ("spg",         0.050),
+            ("bpg",         0.045),
+            ("avg_ppp_def", 0.035),
+            ("p_drb_100",   0.030),
+            ("p_stl_100",   0.050),   # remapped SPG proxy — keeps weight total correct
+            ("p_blk_100",   0.045),   # remapped BPG proxy
+        ]
+        # Deduplicate: use per-100 when available, per-game otherwise (stat list is fixed)
+        DEF_TIER_FINAL = [
+            ("epm_def",     0.075),
+            ("p_stl_100",   0.050),
+            ("p_blk_100",   0.045),
+            ("avg_ppp_def", 0.035),
+            ("p_drb_100",   0.030),
+        ]
+        del DEF_TIER  # not used further
+
+        pop_stats: Dict[str, Tuple[float, float]] = {}
+        for stat, _ in DEF_TIER_FINAL:
+            vals = [getattr(self.players.get(did), stat, None)
+                    for did in all_def_ids if self.players.get(did)]
+            vals = [v for v in vals if v is not None]
+            if len(vals) >= 3:
+                mean, std = float(np.mean(vals)), float(np.std(vals))
+                pop_stats[stat] = (mean, max(std, 1e-9))
+
+        target_vec = self._build_zscored_stat_vec(target_id, DEF_TIER_FINAL, pop_stats)
 
         results = []
-        for other_id in all_defenders:
+        for other_id in all_def_ids:
             if other_id == target_id:
                 continue
             other_opps: Dict[int, float] = {
@@ -460,36 +865,185 @@ class MatchupGraph:
                 for (oi, di), e in self.matchups.items()
                 if di == other_id
             }
-            other_set = set(other_opps)
-            shared = target_set & other_set
+            shared = target_set & set(other_opps)
             if len(shared) < 3:
                 continue
 
-            jaccard = len(shared) / len(target_set | other_set)
+            jaccard = len(shared) / len(target_set | set(other_opps))
+
             t_vec = np.array([target_opps[o] for o in shared])
             o_vec = np.array([other_opps[o] for o in shared])
-
-            nt, no = np.linalg.norm(t_vec), np.linalg.norm(o_vec)
-            cosine = float(np.dot(t_vec, o_vec) / (nt * no)) if nt and no else 0.0
-
             corr = float(np.corrcoef(t_vec, o_vec)[0, 1])
             if np.isnan(corr):
                 corr = 0.0
+            ppp_delta_corr = (corr + 1) / 2
 
-            combined = 0.4 * jaccard + 0.3 * cosine + 0.3 * (corr + 1) / 2
+            phys_sim = self._physical_sim(target_id, other_id)
 
-            other_player = self.players.get(other_id)
+            other_vec = self._build_zscored_stat_vec(other_id, DEF_TIER_FINAL, pop_stats)
+            if target_vec is not None and other_vec is not None:
+                tv, tw = target_vec
+                ov, ow = other_vec
+                raw_cos = self._weighted_cosine(tv, tw, ov, ow)
+                tier_sim = (raw_cos + 1) / 2
+            else:
+                raw_cos = 0.0
+                tier_sim = 0.0
+
+            mps_def = (
+                0.20 * jaccard
+                + 0.15 * ppp_delta_corr
+                + 0.15 * 0.0          # shot_profile_sim — imputed until data available
+                + 0.15 * phys_sim
+                + 0.35 * tier_sim
+            )
+
+            op = self.players.get(other_id)
             results.append({
                 "defender_id": other_id,
-                "defender": other_player.name if other_player else str(other_id),
-                "team": other_player.team if other_player else "—",
-                "position": other_player.position if other_player else "—",
-                "combined_score": combined,
+                "defender": op.name if op else str(other_id),
+                "team": op.team if op else "—",
+                "position": op.position if op else "—",
+                "archetype": op.def_role.value if op and op.def_role else None,
+                "combined_score": mps_def,
+                "mps_def": mps_def,
                 "jaccard": jaccard,
-                "cosine": cosine,
-                "correlation": corr,
+                "cosine": raw_cos,           # kept for backward-compat with existing tests
+                "correlation": corr,         # kept for backward-compat
+                "ppp_delta_corr": ppp_delta_corr,
+                "physical_sim": phys_sim,
+                "tier_sim": tier_sim,
                 "shared_opponents": len(shared),
-                "avg_ppp_def": other_player.avg_ppp_def if other_player else None,
+                "shared_archetype_overlap": 0.0,
+                "avg_ppp_def": op.avg_ppp_def if op else None,
+            })
+
+        results.sort(key=lambda x: x["combined_score"], reverse=True)
+        return results[:top_n]
+
+    def find_similar_scorers(
+        self, scorer_name: str, top_n: int = 10
+    ) -> List[Dict]:
+        """
+        MPS_off = 0.20 × Jaccard(shared defenders faced)
+                + 0.15 × PPP_delta_correlation
+                + 0.15 × shot_zone_similarity  (imputed when unavailable)
+                + 0.15 × usage_archetype_sim
+                + 0.35 × offensive_tier_sim
+
+        offensive_tier_sim = weighted cosine similarity of z-scored stat vectors.
+        """
+        target_id = self.find_player_id(scorer_name)
+        if target_id is None:
+            return []
+
+        target_defs: Dict[int, float] = {
+            di: e.points_per_possession
+            for (oi, di), e in self.matchups.items()
+            if oi == target_id
+        }
+        if not target_defs:
+            return []
+
+        target_set = set(target_defs)
+        all_off_ids = list({oi for (oi, _) in self.matchups})
+
+        OFF_TIER = [
+            ("ppg",           0.070),
+            ("usg_pct",       0.060),
+            ("epm_off",       0.055),
+            ("ts_pct",        0.035),
+            ("ast_pct",       0.030),
+            ("p_fga_rim_100", 0.025),
+            ("p_fg3a_100",    0.020),
+            ("p_fgpct_rim",   0.015),
+            ("fg3_pct",       0.015),
+            ("apg",           0.010),
+            ("ft_pct",        0.005),
+            ("p_orb_100",     0.005),
+        ]
+
+        pop_stats: Dict[str, Tuple[float, float]] = {}
+        for stat, _ in OFF_TIER:
+            vals = [getattr(self.players.get(oid), stat, None)
+                    for oid in all_off_ids if self.players.get(oid)]
+            vals = [v for v in vals if v is not None]
+            if len(vals) >= 3:
+                mean, std = float(np.mean(vals)), float(np.std(vals))
+                pop_stats[stat] = (mean, max(std, 1e-9))
+
+        target_vec = self._build_zscored_stat_vec(target_id, OFF_TIER, pop_stats)
+        tp = self.players.get(target_id)
+
+        def _usage_archetype_sim(pid_b: int) -> float:
+            pb = self.players.get(pid_b)
+            if not tp or not pb:
+                return 0.0
+            usg_diff = abs((tp.usg_pct or 0.20) - (pb.usg_pct or 0.20)) / 0.30
+            ast_diff = abs((tp.ast_pct or 0.10) - (pb.ast_pct or 0.10)) / 0.50
+            sim = max(0.0, 1.0 - 0.5 * usg_diff - 0.5 * ast_diff)
+            if tp.off_archetype and pb.off_archetype and tp.off_archetype == pb.off_archetype:
+                sim = min(1.0, sim + 0.2)
+            return sim
+
+        results = []
+        for other_id in all_off_ids:
+            if other_id == target_id:
+                continue
+            other_defs: Dict[int, float] = {
+                di: e.points_per_possession
+                for (oi, di), e in self.matchups.items()
+                if oi == other_id
+            }
+            shared = target_set & set(other_defs)
+            if len(shared) < 3:
+                continue
+
+            jaccard = len(shared) / len(target_set | set(other_defs))
+
+            t_vec = np.array([target_defs[d] for d in shared])
+            o_vec = np.array([other_defs[d] for d in shared])
+            corr = float(np.corrcoef(t_vec, o_vec)[0, 1])
+            if np.isnan(corr):
+                corr = 0.0
+            ppp_delta_corr = (corr + 1) / 2
+
+            usage_sim = _usage_archetype_sim(other_id)
+
+            other_vec = self._build_zscored_stat_vec(other_id, OFF_TIER, pop_stats)
+            if target_vec is not None and other_vec is not None:
+                tv, tw = target_vec
+                ov, ow = other_vec
+                raw_cos = self._weighted_cosine(tv, tw, ov, ow)
+                tier_sim = (raw_cos + 1) / 2
+            else:
+                raw_cos = 0.0
+                tier_sim = 0.0
+
+            mps_off = (
+                0.20 * jaccard
+                + 0.15 * ppp_delta_corr
+                + 0.15 * 0.0       # shot_zone_sim — imputed until zone data stored on Player
+                + 0.15 * usage_sim
+                + 0.35 * tier_sim
+            )
+
+            op = self.players.get(other_id)
+            results.append({
+                "scorer_id": other_id,
+                "scorer": op.name if op else str(other_id),
+                "team": op.team if op else "—",
+                "position": op.position if op else "—",
+                "archetype": op.off_archetype.value if op and op.off_archetype else None,
+                "combined_score": mps_off,
+                "mps_off": mps_off,
+                "jaccard": jaccard,
+                "cosine": raw_cos,
+                "ppp_delta_corr": ppp_delta_corr,
+                "usage_sim": usage_sim,
+                "tier_sim": tier_sim,
+                "shared_opponents": len(shared),
+                "avg_ppp_off": op.avg_ppp_off if op else None,
             })
 
         results.sort(key=lambda x: x["combined_score"], reverse=True)
