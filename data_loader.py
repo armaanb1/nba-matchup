@@ -1343,12 +1343,13 @@ def compute_defensive_classifier_inputs(graph: "MatchupGraph") -> Dict[int, Dict
         def _fp(keys) -> float:
             return sum(v for k, v in poss_by_pos.items() if k in keys) / total_poss
 
-        # Approximate positional split — NBA position strings collapse PG/SG → "G" etc.
-        g_frac  = _fp({"G", "PG", "SG"})
-        gf_frac = _fp({"G-F", "F-G"})
-        f_frac  = _fp({"F", "SF", "PF"})
-        fc_frac = _fp({"F-C", "C-F"})
-        c_frac  = _fp({"C"})
+        # NBA API CommonPlayerInfo returns full position names, not abbreviations.
+        # Both forms are included so this works regardless of data source.
+        g_frac  = _fp({"G", "PG", "SG", "Guard"})
+        gf_frac = _fp({"G-F", "F-G", "Guard-Forward", "Forward-Guard"})
+        f_frac  = _fp({"F", "SF", "PF", "Forward"})
+        fc_frac = _fp({"F-C", "C-F", "Forward-Center", "Center-Forward"})
+        c_frac  = _fp({"C", "Center"})
 
         pct_vs_pg = g_frac * 0.55 + gf_frac * 0.15
         pct_vs_sg = g_frac * 0.45 + gf_frac * 0.25
@@ -1356,11 +1357,20 @@ def compute_defensive_classifier_inputs(graph: "MatchupGraph") -> Dict[int, Dict
         pct_vs_pf = f_frac  * 0.60 + fc_frac * 0.50
         pct_vs_c  = fc_frac * 0.50 + c_frac
 
-        # Matchup difficulty: weighted average PPP allowed (raw; percentile computed in pool)
-        matchup_diff = (
-            sum(e.possessions * e.points_per_possession for _, e in def_edges)
-            / total_poss
-        )
+        # Matchup difficulty: weighted average of OPPONENT'S season-average PPP
+        # (how good a scorer they are across all their matchups this season).
+        # Using edge.points_per_possession would measure the defender's performance
+        # not the assignment quality — good defenders would look "easy" and
+        # rank low, which is exactly backwards. Using avg_ppp_off captures how
+        # hard the slate of assignments was regardless of defensive outcome.
+        matchup_diff = sum(
+            e.possessions * (
+                graph.players[oi].avg_ppp_off
+                if graph.players.get(oi) and graph.players[oi].avg_ppp_off
+                else e.points_per_possession  # fallback when season avg not available
+            )
+            for oi, e in def_edges
+        ) / total_poss
 
         # Positional versatility: normalised Shannon entropy of position mix
         n_pos = len([v for v in poss_by_pos.values() if v > 0])
@@ -1405,6 +1415,7 @@ def compute_defensive_classifier_inputs(graph: "MatchupGraph") -> Dict[int, Dict
             "rim_time_pct":                   rim_proxy,
             "off_ball_help_rate":             help_proxy,
             "height_inches":                  dp.height_inches if dp else None,
+            "position":                       dp.position if dp else None,
         }
 
     return result

@@ -282,11 +282,14 @@ def classify_defender(
     p40_vers   = _pctile(vers_vals, 40)
     p60_help   = _pctile(help_vals, 60)
 
-    # Big Gate
+    # Big Gate: primarily guards bigs (≥55% time vs C/PF) OR high rim activity
     big_gate = (vs_c + vs_pf >= 0.55) or (rim_time >= p80_rim)
 
     if big_gate:
-        if pos_versatility < p40_vers and matchup_diff < p50_diff:
+        # Anchor Big: concentrates on bigs, low positional versatility
+        # (drops in PnR, stays home on roll/cut/post assignments)
+        # Mobile Big: switches out to perimeter, guards mixed positions
+        if pos_versatility < p40_vers:
             return DefensiveRole.ANCHOR_BIG
         return DefensiveRole.MOBILE_BIG
 
@@ -300,18 +303,25 @@ def classify_defender(
     h = height_in or 78
 
     # Priority: Wing Stopper > Point of Attack > Chaser > Helper > Low Activity
+
+    # Wing Stopper: tall enough to guard wings, guards tough shot creators,
+    # and shows at least average positional versatility (can cover multiple spots).
+    # Removed strict versatility gate — elite perimeter stoppers who
+    # specialize in guarding one archetype should qualify via the archetype sum.
     if (
         (vs_shot_creator + vs_primary_bh + vs_slasher) >= 0.35
         and matchup_diff >= p60_diff
         and h >= 76
-        and pos_versatility >= p50_vers
     ):
         return DefensiveRole.WING_STOPPER
 
+    # Point of Attack: primarily guards ball-handlers; height ≤ 80" (6-8) to
+    # distinguish from versatile wings. Using ≤ 80 rather than < 79 so that
+    # 6-7 guards (79") are not excluded by a rounding artifact.
     if (
         (vs_pg + vs_primary_bh + vs_shot_creator) >= 0.40
         and matchup_diff >= p60_diff
-        and h < 79
+        and h <= 80
     ):
         return DefensiveRole.POINT_OF_ATTACK
 
