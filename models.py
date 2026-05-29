@@ -340,106 +340,152 @@ def classify_defender(
     return DefensiveRole.LOW_ACTIVITY  # default fallback
 
 
-def classify_defensive_archetype(player: "Player") -> str:
-    """Classify a player's defensive archetype from bio and per-100 stats."""
-    h = player.height_inches or 0
-    pos = (player.position or "").strip()
-    # Normalize position to include abbrevs and full names
-    pos_upper = pos.upper()
-    has_C = "C" in pos_upper or "CENTER" in pos_upper
-    has_F = "F" in pos_upper or "FORWARD" in pos_upper
-    has_G = "G" in pos_upper or "GUARD" in pos_upper
-
-    bpg      = player.bpg      or 0.0
-    spg      = player.spg      or 0.0
-    usg_pct  = player.usg_pct  or 0.0
-    blk100   = player.p_blk_100 or 0.0
-    stl100   = player.p_stl_100 or 0.0
-
-    # 1. Anchor/Interior Big
-    if has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0):
-        return "Anchor/Interior Big"
-
-    # 2. Mobile/Perimeter Big — 6-8+ (80") required; 6-7 is a wing, not a big
-    if (has_C or has_F) and h >= 80 and not (has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0)):
-        return "Mobile/Perimeter Big"
-
-    # 3. Helper/Rotator — must be a non-guard big/wing; high-steal/block guards
-    # (Derrick White, Ausar Thompson) are perimeter stoppers, not rotators.
-    if h >= 77 and (bpg >= 0.8 or blk100 >= 2.0 or spg >= 1.5 or stl100 >= 2.5) and not has_G:
-        return "Helper/Rotator"
-
-    # 4. Wing Stopper — forwards/wings 6-4 to 6-9
-    if 76 <= h <= 81 and (has_F or "SF" in pos_upper or "PF" in pos_upper or "SMALL FORWARD" in pos_upper or "POWER FORWARD" in pos_upper):
-        return "Wing Stopper"
-
-    # 5. Chaser — guards 6-2 to 6-7
-    if 74 <= h <= 79 and (has_G or "SG" in pos_upper or "SF" in pos_upper or "SHOOTING GUARD" in pos_upper or "SMALL FORWARD" in pos_upper):
-        return "Chaser"
-
-    # 6. Low-Activity/Hider
-    if usg_pct >= 0.28 and (player.spg is None or spg < 0.8) and (player.bpg is None or bpg < 0.4):
-        return "Low-Activity/Hider"
-
-    # 7. Point-of-Attack Defender
-    if h <= 75 and has_G:
-        return "Point-of-Attack Defender"
-
-    # Default fallback by position
-    if has_C:
-        return "Anchor/Interior Big"
-    if has_F:
-        return "Wing Stopper"
-    if has_G:
-        return "Chaser"
-    return "Wing Stopper"
-
-
 def classify_offensive_archetype(player: "Player") -> str:
-    """Classify a player's offensive archetype from bio and per-100 stats."""
+    """
+    Classify a player's offensive archetype from bio and per-100 stats.
+
+    Step-0 finding: p_fg3a_100 from dunksandthrees is mis-scaled. Non-shooters
+    like Hartenstein and Gobert show ~7-8 when the true per-100 value should be
+    ~0.1-0.3. fg3_pct (from NBA API per-game) is reliable and used as the primary
+    non-shooter gate for bigs (fg3_pct < 0.20) and as the accuracy floor for
+    Spot-Up Shooter (fg3_pct >= 0.36). fg3a_share is computed from the raw fields
+    and used for secondary volume checks where direction matters even if scale is off.
+    """
     h = player.height_inches or 0
-    pos = (player.position or "").strip()
-    pos_upper = pos.upper()
+    pos_upper = (player.position or "").upper().strip()
+
     has_C = "C" in pos_upper or "CENTER" in pos_upper
-    has_F = "F" in pos_upper or "FORWARD" in pos_upper
+    has_G = "G" in pos_upper or "GUARD" in pos_upper
+    # is_big: position contains Center/C but is not a Guard hybrid.
+    # Tall forwards (Giannis, "Forward" at 6-11) stay in the guard/wing tree.
+    is_big = has_C and not has_G
 
-    apg      = player.apg      or 0.0
-    usg_pct  = player.usg_pct  or 0.0
-    fg3a_100 = player.p_fg3a_100    or 0.0
-    rim_100  = player.p_fga_rim_100 or 0.0
-    mid_100  = player.p_fga_mid_100 or 0.0
+    apg     = player.apg           or 0.0
+    usg     = player.usg_pct       or 0.0
+    fg3a    = player.p_fg3a_100    or 0.0
+    rim     = player.p_fga_rim_100 or 0.0
+    mid     = player.p_fga_mid_100 or 0.0
+    fg3_pct = player.fg3_pct       or 0.0
 
-    # 1. Post Scorer
-    if (has_C or "PF" in pos_upper or "POWER FORWARD" in pos_upper) and \
-       player.p_fg3a_100 is not None and player.p_fg3a_100 < 2 and h >= 79:
-        return "Post Scorer"
+    # fg3a_share: 3PA as a fraction of total shot attempts.
+    # (a) Computed from the mis-scaled EPM fields; used only where direction is
+    #     sufficient (Slasher < 0.35, Spot-Up >= 0.45) so the absolute mis-scale
+    #     does not produce wrong calls.
+    # (b) fg3_pct >= 0.36 accuracy floor and not is_big position gate are what
+    #     keep centers and non-shooters out of "Spot-Up Shooter".
+    total_fga_100 = rim + mid + fg3a
+    fg3a_share = fg3a / total_fga_100 if total_fga_100 > 0 else 0.0
 
-    # 2. Roll & Cut Big
-    if (has_C or has_F) and rim_100 >= 6 and (player.p_fg3a_100 is None or fg3a_100 < 3):
+    # 1. Roll & Cut Big: center who lives at the rim and rarely makes 3s.
+    #    fg3_pct < 0.20 is robust to p_fg3a_100 mis-scaling (Hartenstein: 0.000,
+    #    Gobert: 0.000 even though their p_fg3a_100 shows ~7 due to the bug above).
+    if is_big and rim >= 5 and fg3_pct < 0.20:
         return "Roll & Cut Big"
 
-    # 3. Primary Ball Handler
-    if apg >= 5 or (apg >= 4 and usg_pct >= 0.25):
+    # 2. Post Scorer: remaining bigs (stretch or post-oriented)
+    if is_big:
+        return "Post Scorer"
+
+    # 3. Primary Ball Handler: high playmaking volume
+    if apg >= 5 or (apg >= 4 and usg >= 0.25):
         return "Primary Ball Handler"
 
-    # 4. Slasher
-    if rim_100 >= 6 and (player.p_fg3a_100 is None or fg3a_100 < 4):
+    # 4. Slasher: attacks the rim but keeps 3-point volume low
+    if rim >= 6 and fg3a_share < 0.35:
         return "Slasher"
 
-    # 5. Spot-Up Shooter
-    if fg3a_100 >= 6 and usg_pct < 0.22:
+    # 5. Spot-Up Shooter: three-point-heavy, efficient, low-usage, non-big.
+    #    Three gates prevent bigs and non-shooters from landing here:
+    #    (a) not is_big — position gate (centers out regardless of fg3a_share)
+    #    (b) fg3_pct >= 0.36 — accuracy floor: Hartenstein fg3_pct=0.000 fails here
+    #    (c) fg3a_share >= 0.45 and fg3a >= 7 — volume confirmation
+    if (not is_big) and fg3a_share >= 0.45 and fg3a >= 7 and fg3_pct >= 0.36 and usg < 0.22:
         return "Spot-Up Shooter"
 
-    # 6. Shot Creator
-    if usg_pct >= 0.25 and mid_100 >= 3:
+    # 6. Shot Creator: high-usage, mid-range creation off the dribble
+    if usg >= 0.25 and mid >= 3:
         return "Shot Creator"
 
     # 7. Low-Usage Role Player
-    if player.usg_pct is not None and usg_pct < 0.18:
+    if player.usg_pct is not None and usg < 0.18:
         return "Low-Usage Role Player"
 
-    # Default
     return "Versatile Scorer"
+
+
+def classify_defensive_archetype(player: "Player") -> str:
+    """
+    Classify a player's defensive archetype from bio and per-100 stats.
+
+    Emit ONLY these exact label strings:
+    "Anchor Big", "Mobile Big", "Low Activity", "Point of Attack",
+    "Chaser", "Wing Stopper", "Helper"
+
+    "Low Activity" is defined by low defensive event rates + non-positive
+    defensive EPM + non-primary matchup assignment — NOT by offensive usage.
+    It fires before the perimeter buckets so genuine non-defenders (Trae Young,
+    Jordan Poole) are captured before Chaser/Wing Stopper rules apply to them.
+    """
+    h = player.height_inches or 0
+    pos_upper = (player.position or "").upper().strip()
+
+    has_C = "C" in pos_upper or "CENTER" in pos_upper
+    has_G = "G" in pos_upper or "GUARD" in pos_upper
+    has_F = "F" in pos_upper or "FORWARD" in pos_upper
+
+    # is_big: true center role (contains C but not a guard hybrid)
+    is_big = has_C and not has_G
+    # is_guard: guard by position, or very short player (≤6-4)
+    is_guard = (has_G and not has_C) or h <= 76
+
+    bpg    = player.bpg       or 0.0
+    blk100 = player.p_blk_100 or 0.0
+    stl100 = player.p_stl_100 or 0.0
+
+    # 1. Anchor Big: elite rim-protecting center
+    if is_big and h >= 82 and (blk100 >= 2.0 or bpg >= 1.2):
+        return "Anchor Big"
+
+    # 2. Mobile Big: remaining bigs (switchable, versatile)
+    if is_big:
+        return "Mobile Big"
+
+    # 3. Low Activity — fires BEFORE perimeter buckets.
+    #    Primary gate: negative defensive EPM (player is a net negative defender).
+    #    Stl/blk caps prevent on-ball defenders with negative EPM from landing here.
+    #    Do NOT use usg_pct here — that is an offensive stat.
+    _epm_def = player.epm_def
+    _low = (
+        # EPM available: must be negative AND below stat activity floors
+        (_epm_def is not None and _epm_def < 0.0 and stl100 < 1.8 and blk100 < 1.5)
+        # EPM absent: fall back to very-low raw activity as proxy
+        or (_epm_def is None and stl100 < 0.9 and blk100 < 0.5)
+    )
+    if _low:
+        return "Low Activity"
+
+    # 4. Point of Attack: on-ball guard defender with active hands
+    if is_guard and stl100 >= 1.5:
+        return "Point of Attack"
+
+    # 5. Chaser: guard who navigates off-ball and sticks to shooters
+    if is_guard or (has_G and h >= 77):
+        return "Chaser"
+
+    # 6. Wing Stopper: forward who can guard multiple positions on the perimeter
+    if 77 <= h <= 82 and has_F and not has_G:
+        return "Wing Stopper"
+
+    # 7. Helper: tall non-guard with secondary rim coverage
+    if h >= 77 and blk100 >= 2.0 and not is_guard:
+        return "Helper"
+
+    # Default by position
+    if has_C:
+        return "Anchor Big"
+    if has_F:
+        return "Wing Stopper"
+    return "Chaser"
 
 
 # ---------------------------------------------------------------------------

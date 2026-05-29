@@ -19,14 +19,14 @@ from models import MatchupEdge, MatchupGraph, Player, classify_offensive_archety
 # ---------------------------------------------------------------------------
 
 DEFENSIVE_ARCHETYPE_DEFINITIONS = """
-Defensive archetypes (use ONLY these labels):
-Point-of-Attack Defender: guards opposing ball-handling guard; lateral quickness, screen navigation. Ex: Alex Caruso.
-Chaser: guards opposing off-ball guard/wing; navigates off-ball screens and DHOs. Ex: KCP.
-Wing Stopper: guards opposing ball-handling wing; perimeter isolation + some post defense + rebounding. Ex: Dillon Brooks.
-Helper/Rotator: guards low-threat player; plays passing lanes, secondary rim protection, tags roll-men. Ex: Giannis.
-Mobile/Perimeter Big: guards opposing big; paint protection + post + aggressive coverages (switch/trap/hedge). Ex: Bam Adebayo, Anthony Davis.
-Anchor/Interior Big: guards opposing big; paint protection + post + conservative coverages (drop/soft hedge). Ex: Rudy Gobert, Brook Lopez.
-Low-Activity/Hider: offensive star hidden on weakest opposing option; not asked to anchor anything alone. Ex: most one-way star PGs and SGs.
+Defensive archetypes (use ONLY these exact labels):
+Point of Attack: guards opposing ball-handling guard; lateral quickness, screen navigation. Ex: Alex Caruso, Dyson Daniels.
+Chaser: guards opposing off-ball guard/wing; navigates off-ball screens and DHOs. Ex: Derrick White, Mikal Bridges.
+Wing Stopper: guards opposing ball-handling wing; perimeter isolation + post defense + rebounding. Ex: Dillon Brooks, Ausar Thompson.
+Helper: non-guard with secondary rim coverage; blocks passing lanes, tags roll-men. Ex: Giannis Antetokounmpo.
+Mobile Big: versatile center/forward; paint protection + aggressive coverages (switch/trap/hedge). Ex: Bam Adebayo, Nic Claxton.
+Anchor Big: elite rim-protecting center; conservative coverage (drop/soft hedge). Ex: Rudy Gobert, Walker Kessler.
+Low Activity: offensive star or non-defender hidden on weakest opposing option; negative defensive EPM. Ex: Trae Young, Jordan Poole.
 """
 
 

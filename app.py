@@ -1502,9 +1502,8 @@ with tab4:
         "Post Scorer", "Low-Usage Role Player",
     ]
     _DEFENSIVE_ARCHETYPE_LIST = [
-        "Point-of-Attack Defender", "Chaser", "Wing Stopper",
-        "Helper/Rotator", "Mobile/Perimeter Big",
-        "Anchor/Interior Big", "Low-Activity/Hider",
+        "Point of Attack", "Wing Stopper", "Chaser",
+        "Helper", "Anchor Big", "Mobile Big", "Low Activity",
     ]
 
     _ab_left, _ab_right = st.columns(2)

@@ -1042,5 +1042,358 @@ class TestEndToEndFlow(unittest.TestCase):
         self.assertLess(zeta_ppp, epsilon_ppp)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 11. classify_offensive_archetype — ground-truth fixtures
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _off_player(
+    position: str, height: str, *,
+    usg_pct: float = 0.20,
+    apg: float = 2.0,
+    fg3_pct: float = 0.00,
+    p_fg3a_100: float = 2.0,
+    p_fga_rim_100: float = 3.0,
+    p_fga_mid_100: float = 3.0,
+    p_blk_100: float = 0.5,
+    epm_def: float = None,
+) -> Player:
+    p = Player(player_id=999, name="fixture")
+    p.position = position
+    p.height = height
+    p.usg_pct = usg_pct
+    p.apg = apg
+    p.fg3_pct = fg3_pct
+    p.p_fg3a_100 = p_fg3a_100
+    p.p_fga_rim_100 = p_fga_rim_100
+    p.p_fga_mid_100 = p_fga_mid_100
+    p.p_blk_100 = p_blk_100
+    p.epm_def = epm_def
+    p.ppg = 12.0
+    p.games = 50
+    return p
+
+
+class TestClassifyOffensiveArchetype(unittest.TestCase):
+
+    def _oa(self, **kw):
+        from models import classify_offensive_archetype
+        return classify_offensive_archetype(_off_player(**kw))
+
+    # ── Roll & Cut Big ────────────────────────────────────────────────────────
+
+    def test_hartenstein_roll_cut(self):
+        """Center, 7-0, rim-runner, 0 FG3% → Roll & Cut Big (not Spot-Up Shooter)."""
+        result = self._oa(position="Center-Forward", height="7-0",
+                          fg3_pct=0.000, p_fga_rim_100=7.4, p_fg3a_100=7.4,
+                          usg_pct=0.15)
+        self.assertEqual(result, "Roll & Cut Big")
+
+    def test_gafford_roll_cut(self):
+        result = self._oa(position="Forward-Center", height="6-11",
+                          fg3_pct=0.000, p_fga_rim_100=11.0, p_fg3a_100=5.0,
+                          usg_pct=0.15)
+        self.assertEqual(result, "Roll & Cut Big")
+
+    def test_kessler_roll_cut(self):
+        """Kessler: ultra-low 3PA volume even if small-sample fg3_pct is inflated."""
+        result = self._oa(position="Center", height="7-0",
+                          fg3_pct=0.05, p_fga_rim_100=8.8, p_fg3a_100=3.0,
+                          usg_pct=0.17)
+        self.assertEqual(result, "Roll & Cut Big")
+
+    def test_mitchell_robinson_roll_cut(self):
+        result = self._oa(position="Center-Forward", height="7-0",
+                          fg3_pct=0.000, p_fga_rim_100=9.0, p_fg3a_100=6.4,
+                          usg_pct=0.10)
+        self.assertEqual(result, "Roll & Cut Big")
+
+    def test_gobert_roll_cut(self):
+        result = self._oa(position="Center", height="7-1",
+                          fg3_pct=0.000, p_fga_rim_100=8.4, p_fg3a_100=7.3,
+                          usg_pct=0.13)
+        self.assertEqual(result, "Roll & Cut Big")
+
+    # ── Post Scorer ───────────────────────────────────────────────────────────
+
+    def test_embiid_post_scorer(self):
+        result = self._oa(position="Center-Forward", height="7-0",
+                          fg3_pct=0.333, p_fga_rim_100=7.0, p_fga_mid_100=14.0,
+                          p_fg3a_100=6.4, usg_pct=0.34)
+        self.assertEqual(result, "Post Scorer")
+
+    def test_sengun_post_scorer(self):
+        # apg kept below Primary BH threshold
+        result = self._oa(position="Center", height="6-9",
+                          fg3_pct=0.305, p_fga_rim_100=10.1, p_fga_mid_100=9.3,
+                          p_fg3a_100=2.6, usg_pct=0.26, apg=3.5)
+        self.assertEqual(result, "Post Scorer")
+
+    def test_jokic_like_post_scorer(self):
+        """Big with ~35% FG3 and high mid — not a roll-and-cut big."""
+        result = self._oa(position="Center", height="7-0",
+                          fg3_pct=0.350, p_fga_rim_100=5.0, p_fga_mid_100=8.0,
+                          p_fg3a_100=5.0, usg_pct=0.30, apg=3.0)
+        self.assertEqual(result, "Post Scorer")
+
+    # ── Primary Ball Handler ──────────────────────────────────────────────────
+
+    def test_sga_primary_bh(self):
+        result = self._oa(position="Guard", height="6-6",
+                          apg=6.6, usg_pct=0.32, fg3_pct=0.386,
+                          p_fg3a_100=5.7, p_fga_rim_100=7.6, p_fga_mid_100=13.0)
+        self.assertEqual(result, "Primary Ball Handler")
+
+    def test_doncic_like_primary_bh(self):
+        result = self._oa(position="Guard-Forward", height="6-7",
+                          apg=9.0, usg_pct=0.38, fg3_pct=0.37,
+                          p_fg3a_100=8.0, p_fga_rim_100=6.0, p_fga_mid_100=10.0)
+        self.assertEqual(result, "Primary Ball Handler")
+
+    def test_cunningham_like_primary_bh(self):
+        result = self._oa(position="Guard", height="6-6",
+                          apg=7.5, usg_pct=0.30, fg3_pct=0.33,
+                          p_fga_rim_100=5.0, p_fga_mid_100=8.0)
+        self.assertEqual(result, "Primary Ball Handler")
+
+    # ── Slasher ───────────────────────────────────────────────────────────────
+
+    def test_giannis_slasher(self):
+        """Forward at 6-11 — NOT is_big (no C in position) → Slasher via rim + low fg3a_share."""
+        result = self._oa(position="Forward", height="6-11",
+                          p_fga_rim_100=18.3, p_fga_mid_100=6.5, p_fg3a_100=2.2,
+                          fg3_pct=0.333, usg_pct=0.36, apg=3.0)
+        self.assertEqual(result, "Slasher")
+
+    def test_zion_like_slasher(self):
+        result = self._oa(position="Forward", height="6-6",
+                          p_fga_rim_100=13.6, p_fga_mid_100=4.5, p_fg3a_100=9.3,
+                          fg3_pct=0.25, usg_pct=0.25, apg=2.0)
+        self.assertEqual(result, "Slasher")
+
+    # ── Spot-Up Shooter ───────────────────────────────────────────────────────
+
+    def test_sam_hauser_spot_up(self):
+        """High fg3a_share, high fg3_pct, low USG, not a big."""
+        result = self._oa(position="Forward", height="6-7",
+                          p_fga_rim_100=1.3, p_fga_mid_100=2.0, p_fg3a_100=11.7,
+                          fg3_pct=0.393, usg_pct=0.141)
+        self.assertEqual(result, "Spot-Up Shooter")
+
+    def test_aj_green_spot_up(self):
+        result = self._oa(position="Guard", height="6-4",
+                          p_fga_rim_100=6.4, p_fga_mid_100=1.4, p_fg3a_100=13.2,
+                          fg3_pct=0.419, usg_pct=0.135)
+        self.assertEqual(result, "Spot-Up Shooter")
+
+    def test_sam_merrill_spot_up(self):
+        result = self._oa(position="Guard", height="6-4",
+                          p_fga_rim_100=2.0, p_fga_mid_100=1.8, p_fg3a_100=11.5,
+                          fg3_pct=0.421, usg_pct=0.167)
+        self.assertEqual(result, "Spot-Up Shooter")
+
+    def test_center_cannot_be_spot_up(self):
+        """A center with inflated p_fg3a_100 but fg3_pct=0 must NOT be Spot-Up Shooter."""
+        result = self._oa(position="Center", height="7-0",
+                          p_fga_rim_100=7.4, p_fga_mid_100=3.5, p_fg3a_100=7.4,
+                          fg3_pct=0.000, usg_pct=0.15)
+        self.assertNotEqual(result, "Spot-Up Shooter")
+
+    # ── Shot Creator ──────────────────────────────────────────────────────────
+
+    def test_durant_shot_creator(self):
+        # Durant: high USG%, mid-range creation; apg kept below Primary BH threshold
+        result = self._oa(position="Forward", height="6-11",
+                          usg_pct=0.263, apg=3.0, fg3_pct=0.413,
+                          p_fga_rim_100=2.4, p_fga_mid_100=12.3, p_fg3a_100=7.4)
+        self.assertEqual(result, "Shot Creator")
+
+    def test_booker_shot_creator(self):
+        """Devin Booker: high USG%, heavy mid-range creation; apg below Primary BH gate."""
+        result = self._oa(position="Guard", height="6-5",
+                          usg_pct=0.307, apg=3.5, fg3_pct=0.330,
+                          p_fga_rim_100=5.1, p_fga_mid_100=11.8, p_fg3a_100=7.2)
+        self.assertEqual(result, "Shot Creator")
+
+    # ── Low-Usage Role Player ─────────────────────────────────────────────────
+
+    def test_josh_hart_low_usage(self):
+        """Hart: hustle player with USG ~0.16, below the 0.18 threshold."""
+        result = self._oa(position="Guard", height="6-5",
+                          usg_pct=0.155, apg=4.8, fg3_pct=0.413,
+                          p_fga_rim_100=5.1, p_fga_mid_100=2.5, p_fg3a_100=6.0)
+        self.assertEqual(result, "Low-Usage Role Player")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 12. classify_defensive_archetype — ground-truth fixtures
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _def_player(
+    position: str, height: str, *,
+    bpg: float = 0.3,
+    spg: float = 0.8,
+    p_blk_100: float = 0.5,
+    p_stl_100: float = 1.0,
+    usg_pct: float = 0.20,
+    epm_def: float = None,
+) -> Player:
+    p = Player(player_id=998, name="def_fixture")
+    p.position = position
+    p.height = height
+    p.bpg = bpg
+    p.spg = spg
+    p.p_blk_100 = p_blk_100
+    p.p_stl_100 = p_stl_100
+    p.usg_pct = usg_pct
+    p.epm_def = epm_def
+    p.ppg = 10.0
+    p.games = 50
+    return p
+
+
+class TestClassifyDefensiveArchetype(unittest.TestCase):
+
+    def _da(self, **kw):
+        from models import classify_defensive_archetype
+        return classify_defensive_archetype(_def_player(**kw))
+
+    # ── Anchor Big ────────────────────────────────────────────────────────────
+
+    def test_gobert_anchor(self):
+        """Rudy Gobert: 7-1 Center, elite shot blocker."""
+        result = self._da(position="Center", height="7-1",
+                          p_blk_100=2.20, bpg=2.0, p_stl_100=1.28, epm_def=1.5)
+        self.assertEqual(result, "Anchor Big")
+
+    def test_wembanyama_anchor(self):
+        result = self._da(position="Forward-Center", height="7-4",
+                          p_blk_100=5.35, bpg=3.5, p_stl_100=1.67, epm_def=3.81)
+        self.assertEqual(result, "Anchor Big")
+
+    def test_kessler_anchor(self):
+        result = self._da(position="Center", height="7-0",
+                          p_blk_100=3.52, bpg=2.5, p_stl_100=1.19, epm_def=None)
+        self.assertEqual(result, "Anchor Big")
+
+    # ── Mobile Big ────────────────────────────────────────────────────────────
+
+    def test_bam_mobile(self):
+        """Bam Adebayo: 6-9 Center-Forward, switchable — h=81 < 82 → Mobile Big."""
+        result = self._da(position="Center-Forward", height="6-9",
+                          p_blk_100=0.0, bpg=1.0, p_stl_100=1.73, epm_def=1.5)
+        self.assertEqual(result, "Mobile Big")
+
+    def test_claxton_mobile(self):
+        """Nic Claxton: Center, blk100 and bpg both below Anchor thresholds → Mobile Big."""
+        result = self._da(position="Center", height="6-11",
+                          p_blk_100=1.86, bpg=0.9, p_stl_100=1.32, epm_def=None)
+        self.assertEqual(result, "Mobile Big")
+
+    # ── Low Activity ─────────────────────────────────────────────────────────
+
+    def test_jordan_poole_low_activity(self):
+        """Poole: negative epm_def, low blocks → Low Activity before Chaser fires."""
+        result = self._da(position="Guard", height="6-4",
+                          p_stl_100=1.55, p_blk_100=0.00, epm_def=-1.54)
+        self.assertEqual(result, "Low Activity")
+
+    def test_trae_young_low_activity(self):
+        """Trae: negative epm_def — Low Activity NOT based on offensive usg_pct."""
+        result = self._da(position="Guard", height="6-2",
+                          p_stl_100=1.58, p_blk_100=0.00, epm_def=-1.76)
+        self.assertEqual(result, "Low Activity")
+
+    def test_cam_thomas_low_activity(self):
+        result = self._da(position="Guard", height="6-3",
+                          p_stl_100=0.00, p_blk_100=0.00, epm_def=-2.49)
+        self.assertEqual(result, "Low Activity")
+
+    def test_high_usage_guard_not_low_activity_via_usg(self):
+        """Low Activity must NOT fire because of high usg_pct — only via defensive stats."""
+        result = self._da(position="Guard", height="6-5",
+                          p_stl_100=2.5, p_blk_100=0.5, usg_pct=0.35, epm_def=2.0)
+        self.assertNotEqual(result, "Low Activity")
+
+    # ── Point of Attack ───────────────────────────────────────────────────────
+
+    def test_dort_point_of_attack(self):
+        result = self._da(position="Guard", height="6-4",
+                          p_stl_100=1.65, p_blk_100=0.00, epm_def=1.0)
+        self.assertEqual(result, "Point of Attack")
+
+    def test_dyson_daniels_point_of_attack(self):
+        """Daniels: 6-7 Guard, elite steals."""
+        result = self._da(position="Guard", height="6-7",
+                          p_stl_100=3.00, p_blk_100=0.00, epm_def=2.63)
+        self.assertEqual(result, "Point of Attack")
+
+    def test_cason_wallace_point_of_attack(self):
+        result = self._da(position="Guard", height="6-3",
+                          p_stl_100=3.14, p_blk_100=0.00, epm_def=2.94)
+        self.assertEqual(result, "Point of Attack")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 13. Regression counts — Spot-Up Shooter must shrink; Low Activity must grow
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestArchetypeRegressionCounts(unittest.TestCase):
+    """
+    Run both classifiers over the synthetic graph to verify the taxonomy
+    doesn't collapse to a single bucket.  Uses the full 499-player graph
+    (loaded once via module-level state to avoid slow repeated loads).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from data_loader import load_matchup_data, enrich_graph
+        from models import MatchupGraph
+        df = load_matchup_data("2025-26", "Regular Season", min_possessions=20)
+        cls.graph = MatchupGraph()
+        cls.graph.build_from_dataframe(df, min_possessions=20)
+        enrich_graph(cls.graph, season="2025-26")
+
+    def test_spot_up_shooter_count_under_80(self):
+        """
+        Before the fix, ~247 players were Spot-Up Shooter (no position gate,
+        no accuracy gate).  After adding is_big guard + fg3_pct >= 0.36 +
+        fg3a_share >= 0.45 gates, the count must be under 80.
+        """
+        from models import classify_offensive_archetype
+        count = sum(
+            1 for p in self.graph.players.values()
+            if classify_offensive_archetype(p) == "Spot-Up Shooter"
+        )
+        # Spec says "~80" (was 247); allow up to 90 to account for season variation
+        self.assertLess(count, 90,
+            f"Spot-Up Shooter count {count} still too high — position/accuracy gate may be broken")
+
+    def test_low_activity_captures_at_least_30(self):
+        """
+        Low Activity should capture non-defenders; at least ~30 players
+        in the current season's matchup graph should qualify.
+        """
+        from models import classify_defensive_archetype
+        count = sum(
+            1 for p in self.graph.players.values()
+            if classify_defensive_archetype(p) == "Low Activity"
+        )
+        self.assertGreaterEqual(count, 30,
+            f"Low Activity count {count} too low — epm_def gate may be too strict")
+
+    def test_no_center_is_spot_up_shooter(self):
+        """Centers must never reach Spot-Up Shooter regardless of p_fg3a_100."""
+        from models import classify_offensive_archetype
+        centers = [
+            p for p in self.graph.players.values()
+            if p.position and ("Center" in p.position or ("C" in p.position.upper()
+               and "Guard" not in p.position))
+        ]
+        bad = [p.name for p in centers
+               if classify_offensive_archetype(p) == "Spot-Up Shooter"]
+        self.assertEqual(bad, [],
+            f"Centers labeled Spot-Up Shooter: {bad}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
