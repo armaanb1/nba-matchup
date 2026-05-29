@@ -340,6 +340,107 @@ def classify_defender(
     return DefensiveRole.LOW_ACTIVITY  # default fallback
 
 
+def classify_defensive_archetype(player: "Player") -> str:
+    """Classify a player's defensive archetype from bio and per-100 stats."""
+    h = player.height_inches or 0
+    pos = (player.position or "").strip()
+    # Normalize position to include abbrevs and full names
+    pos_upper = pos.upper()
+    has_C = "C" in pos_upper or "CENTER" in pos_upper
+    has_F = "F" in pos_upper or "FORWARD" in pos_upper
+    has_G = "G" in pos_upper or "GUARD" in pos_upper
+
+    bpg      = player.bpg      or 0.0
+    spg      = player.spg      or 0.0
+    usg_pct  = player.usg_pct  or 0.0
+    blk100   = player.p_blk_100 or 0.0
+    stl100   = player.p_stl_100 or 0.0
+
+    # 1. Anchor/Interior Big
+    if has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0):
+        return "Anchor/Interior Big"
+
+    # 2. Mobile/Perimeter Big
+    if (has_C or has_F) and h >= 79 and not (has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0)):
+        return "Mobile/Perimeter Big"
+
+    # 3. Helper/Rotator
+    if h >= 77 and (bpg >= 0.8 or blk100 >= 2.0 or spg >= 1.5 or stl100 >= 2.5) and not pos_upper.startswith("PG"):
+        return "Helper/Rotator"
+
+    # 4. Wing Stopper
+    if 77 <= h <= 81 and (has_F or "SF" in pos_upper or "PF" in pos_upper or "SMALL FORWARD" in pos_upper or "POWER FORWARD" in pos_upper):
+        return "Wing Stopper"
+
+    # 5. Chaser
+    if 74 <= h <= 79 and (has_G or "SG" in pos_upper or "SF" in pos_upper or "SHOOTING GUARD" in pos_upper or "SMALL FORWARD" in pos_upper):
+        return "Chaser"
+
+    # 6. Low-Activity/Hider
+    if usg_pct >= 0.28 and (player.spg is None or spg < 0.8) and (player.bpg is None or bpg < 0.4):
+        return "Low-Activity/Hider"
+
+    # 7. Point-of-Attack Defender
+    if h <= 75 and has_G:
+        return "Point-of-Attack Defender"
+
+    # Default fallback by position
+    if has_C:
+        return "Anchor/Interior Big"
+    if has_F:
+        return "Wing Stopper"
+    if has_G:
+        return "Chaser"
+    return "Wing Stopper"
+
+
+def classify_offensive_archetype(player: "Player") -> str:
+    """Classify a player's offensive archetype from bio and per-100 stats."""
+    h = player.height_inches or 0
+    pos = (player.position or "").strip()
+    pos_upper = pos.upper()
+    has_C = "C" in pos_upper or "CENTER" in pos_upper
+    has_F = "F" in pos_upper or "FORWARD" in pos_upper
+
+    apg      = player.apg      or 0.0
+    usg_pct  = player.usg_pct  or 0.0
+    fg3a_100 = player.p_fg3a_100    or 0.0
+    rim_100  = player.p_fga_rim_100 or 0.0
+    mid_100  = player.p_fga_mid_100 or 0.0
+
+    # 1. Post Scorer
+    if (has_C or "PF" in pos_upper or "POWER FORWARD" in pos_upper) and \
+       player.p_fg3a_100 is not None and player.p_fg3a_100 < 2 and h >= 79:
+        return "Post Scorer"
+
+    # 2. Roll & Cut Big
+    if (has_C or has_F) and rim_100 >= 6 and (player.p_fg3a_100 is None or fg3a_100 < 3):
+        return "Roll & Cut Big"
+
+    # 3. Primary Ball Handler
+    if apg >= 5 or (apg >= 4 and usg_pct >= 0.25):
+        return "Primary Ball Handler"
+
+    # 4. Slasher
+    if rim_100 >= 6 and (player.p_fg3a_100 is None or fg3a_100 < 4):
+        return "Slasher"
+
+    # 5. Spot-Up Shooter
+    if fg3a_100 >= 6 and usg_pct < 0.22:
+        return "Spot-Up Shooter"
+
+    # 6. Shot Creator
+    if usg_pct >= 0.25 and mid_100 >= 3:
+        return "Shot Creator"
+
+    # 7. Low-Usage Role Player
+    if player.usg_pct is not None and usg_pct < 0.18:
+        return "Low-Usage Role Player"
+
+    # Default
+    return "Versatile Scorer"
+
+
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------

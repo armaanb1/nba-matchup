@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
+from models import classify_offensive_archetype, classify_defensive_archetype
 
 # ---------------------------------------------------------------------------
 # Team name → abbreviation / graph lookup key
@@ -201,4 +202,7 @@ def fmt_player_compact(player, career_df: Optional[pd.DataFrame] = None) -> str:
                 delta = curr["ppg"] - b_ppg
                 parts.append(f"PPG vs career baseline: {delta:+.1f} ({b_ppg:.1f} → {curr['ppg']:.1f})")
 
+    off_arch = classify_offensive_archetype(player)
+    def_arch = classify_defensive_archetype(player)
+    parts.append(f"Off. archetype: {off_arch} | Def. archetype: {def_arch}")
     return " | ".join(parts)

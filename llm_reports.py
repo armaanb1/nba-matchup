@@ -11,7 +11,23 @@ from typing import Dict, List, Optional
 import anthropic
 import pandas as pd
 
-from models import MatchupEdge, MatchupGraph, Player
+from models import MatchupEdge, MatchupGraph, Player, classify_offensive_archetype, classify_defensive_archetype
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFENSIVE_ARCHETYPE_DEFINITIONS = """
+Defensive archetypes (use ONLY these labels):
+Point-of-Attack Defender: guards opposing ball-handling guard; lateral quickness, screen navigation. Ex: Alex Caruso.
+Chaser: guards opposing off-ball guard/wing; navigates off-ball screens and DHOs. Ex: KCP.
+Wing Stopper: guards opposing ball-handling wing; perimeter isolation + some post defense + rebounding. Ex: Dillon Brooks.
+Helper/Rotator: guards low-threat player; plays passing lanes, secondary rim protection, tags roll-men. Ex: Giannis.
+Mobile/Perimeter Big: guards opposing big; paint protection + post + aggressive coverages (switch/trap/hedge). Ex: Bam Adebayo, Anthony Davis.
+Anchor/Interior Big: guards opposing big; paint protection + post + conservative coverages (drop/soft hedge). Ex: Rudy Gobert, Brook Lopez.
+Low-Activity/Hider: offensive star hidden on weakest opposing option; not asked to anchor anything alone. Ex: most one-way star PGs and SGs.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +178,63 @@ def fmt_career_context(career_df: pd.DataFrame, player_name: str, shot_zones: Op
     return result
 
 
+def _fmt_archetype_splits(
+    neighborhood: List[Dict],
+    role: str,
+    graph: "MatchupGraph",
+) -> str:
+    """Aggregate neighborhood performance by opponent archetype."""
+    if not neighborhood or graph is None:
+        return ""
+    buckets: Dict[str, Dict] = {}
+    ppp_key   = "ppp"         if role == "offense" else "ppp_allowed"
+    opp_id_key = "defender_id" if role == "offense" else "scorer_id"
+    for row in neighborhood:
+        opp_id = row.get(opp_id_key)
+        opp_p  = graph.players.get(opp_id) if opp_id else None
+        if opp_p is None:
+            continue
+        arch = (
+            classify_defensive_archetype(opp_p)
+            if role == "offense"
+            else classify_offensive_archetype(opp_p)
+        )
+        b = buckets.setdefault(arch, {"poss": 0.0, "pts": 0.0, "fgm_w": 0.0, "fga_w": 0.0})
+        poss = row.get("possessions", 0) or 0
+        pts  = row.get("points" if role == "offense" else "points_allowed", 0) or 0
+        fg_key = "fg_pct" if role == "offense" else "fg_pct_allowed"
+        fg   = row.get(fg_key) or 0.0
+        b["poss"]  += poss
+        b["pts"]   += pts
+        b["fgm_w"] += fg * poss
+        b["fga_w"] += poss
+
+    if not buckets:
+        return ""
+
+    label = "Offensive performance by defensive archetype faced" if role == "offense" \
+            else "Defensive performance by offensive archetype faced"
+    lines = [f"{label}:"]
+    sorted_archs = sorted(
+        buckets.items(),
+        key=lambda x: x[1]["pts"] / x[1]["poss"] if x[1]["poss"] > 0 else 0,
+        reverse=(role == "offense"),
+    )
+    for arch, b in sorted_archs:
+        if b["poss"] < 10:
+            continue
+        ppp = b["pts"] / b["poss"] if b["poss"] > 0 else 0.0
+        fg  = b["fgm_w"] / b["fga_w"] if b["fga_w"] > 0 else 0.0
+        lines.append(f"  • {arch}: PPP {ppp:.3f}, FG% {fg:.1%}, {b['poss']:.0f} poss")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def fmt_current_season_context(
     player: "Player",
     shot_zones: Optional[Dict] = None,
     off_neighborhood: Optional[List[Dict]] = None,
     def_neighborhood: Optional[List[Dict]] = None,
+    graph: Optional["MatchupGraph"] = None,
 ) -> str:
     """Format a player's current-season enriched stats for use as LLM context."""
     bio = _fmt_player_bio(player)
@@ -178,6 +246,14 @@ def fmt_current_season_context(
         parts.append(_fmt_neighborhood_summary(off_neighborhood, role="offense", top_n=6))
     if def_neighborhood:
         parts.append(_fmt_neighborhood_summary(def_neighborhood, role="defense", top_n=6))
+    if off_neighborhood and graph is not None:
+        splits = _fmt_archetype_splits(off_neighborhood, "offense", graph)
+        if splits:
+            parts.append(splits)
+    if def_neighborhood and graph is not None:
+        splits = _fmt_archetype_splits(def_neighborhood, "defense", graph)
+        if splits:
+            parts.append(splits)
     return "\n".join(parts)
 
 
@@ -568,6 +644,7 @@ def _build_profile_prompt(
 
     if role == "offense":
         return (
+            f"Do not discuss {player.name} as a defender. This report covers only {player.name}'s offensive game.\n\n"
             f"Write a scouting report on {player.name} as an offensive player, for a "
             f"coaching staff preparing to defend them. Four paragraphs.\n\n"
             f"Paragraph 1 — OFFENSIVE PROFILE: Name the offensive archetype. Where does "
@@ -602,6 +679,7 @@ def _build_profile_prompt(
         )
     else:
         return (
+            f"Do not discuss {player.name} as an offensive player or scorer unless his scoring load directly affects how a defense must allocate resources toward him (e.g. a 30 PPG player who commands off-ball attention). Even then, limit it to one sentence.\n\n"
             f"Write a scouting report on {player.name} as a defender, for a "
             f"coaching staff preparing to attack them. Four paragraphs.\n\n"
             f"Paragraph 1 — DEFENSIVE ARCHETYPE: Name the defensive role. What physical "
@@ -621,9 +699,9 @@ def _build_profile_prompt(
             f"Paragraph 3 — TENDENCY AND TRAJECTORY: If career trajectory data shows a "
             f"trend that changes the attacking read — declining lateral quickness, "
             f"changing defensive role, foul-rate patterns — state it and explain the "
-            f"implication. Only reference {player.name}'s offensive role if their scoring "
-            f"load forces the opponent to make trade-offs in how they can load toward "
-            f"their defensive assignment. Do not write a career section.\n\n"
+            f"implication. Do not discuss {player.name} as an offensive player or scorer "
+            f"unless his scoring load directly affects how a defense must allocate "
+            f"resources toward him. Do not write a career section.\n\n"
             f"Paragraph 4 — THE VERDICT: One specific scheme recommendation naming the "
             f"play type, the action to run at them, and the floor zone where the offense "
             f"should initiate. Every number in this report supports an argument about how "
@@ -695,8 +773,13 @@ def generate_similarity_report(
         role_label = "DEFENDER"
         neighborhood_label = "DEFENSIVE MATCHUP PROFILE"
 
+    if role == "defense":
+        context_prefix = DEFENSIVE_ARCHETYPE_DEFINITIONS + "\n"
+    else:
+        context_prefix = ""
+
     context = f"""
-=== TARGET {role_label} ===
+{context_prefix}=== TARGET {role_label} ===
 {_fmt_player_bio(target)}
 
 === {neighborhood_label} ===
@@ -709,7 +792,20 @@ def generate_similarity_report(
     n = min(5, len(similar_list))
     similar_names = ", ".join(s.get("defender", s.get("scorer", "?")) for s in similar_list[:n])
 
+    if role == "defense":
+        role_focus_prefix = (
+            f"Do NOT describe {target.name}'s offensive game, offensive stats, scoring tendencies, "
+            f"or shot creation. This report is exclusively about {target.name}'s defensive role, "
+            f"defensive positioning, and what offensive archetypes exploit or struggle against him.\n\n"
+        )
+    else:
+        role_focus_prefix = (
+            f"Do NOT describe {target.name}'s defensive role, defensive stats, or defensive assignments. "
+            f"This report covers only {target.name}'s offensive game.\n\n"
+        )
+
     prompt = (
+        f"{role_focus_prefix}"
         f"Write a scouting report on {target.name} and the {n} most similar players "
         f"to them, covering both offensive and defensive profiles. The {n} most "
         f"similar players by combined MPS score are: {similar_names}. "

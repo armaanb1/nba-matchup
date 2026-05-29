@@ -63,7 +63,7 @@ from llm_reports import (
     stream_player_profile_report,
     _call_anthropic,
 )
-from models import MatchupGraph, OffensiveArchetype, DefensiveRole
+from models import MatchupGraph, OffensiveArchetype, DefensiveRole, classify_offensive_archetype, classify_defensive_archetype
 from visualizations import (
     plot_matchup_comparison,
     plot_neighborhood_bars,
@@ -1202,6 +1202,77 @@ with tab2:
                         ]
                     st.dataframe(pd.DataFrame(disp), hide_index=True, use_container_width=True)
 
+            # ---- Archetype Labels ----
+            st.markdown("---")
+            _off_arch = classify_offensive_archetype(player)
+            _def_arch = classify_defensive_archetype(player)
+            _arch_col1, _arch_col2 = st.columns(2)
+            with _arch_col1:
+                st.info(f"**Offensive Archetype:** {_off_arch}")
+            with _arch_col2:
+                st.info(f"**Defensive Archetype:** {_def_arch}")
+
+            # ---- Per-Archetype Performance Table ----
+            if role_sel == "offense" and neighborhood:
+                st.markdown('<div class="section-header">Performance vs. Defensive Archetypes</div>', unsafe_allow_html=True)
+                _arch_buckets: dict = {}
+                for _row in neighborhood:
+                    _def_id = _row.get("defender_id")
+                    _def_p  = graph.players.get(_def_id) if _def_id else None
+                    _darch  = classify_defensive_archetype(_def_p) if _def_p else "Unknown"
+                    if _darch not in _arch_buckets:
+                        _arch_buckets[_darch] = {"poss": 0.0, "pts": 0.0, "fgm": 0.0, "fga": 0.0, "games": 0}
+                    _b = _arch_buckets[_darch]
+                    _b["poss"]  += _row.get("possessions", 0)
+                    _b["pts"]   += _row.get("points", 0)
+                    _b["fgm"]   += (_row.get("fg_pct", 0) or 0) * (_row.get("possessions", 1))
+                    _b["fga"]   += _row.get("possessions", 0)
+                    _b["games"] += _row.get("games", 0)
+                _arch_rows = []
+                for _darch, _b in _arch_buckets.items():
+                    _ppp = _b["pts"] / _b["poss"] if _b["poss"] > 0 else 0.0
+                    _fg  = _b["fgm"] / _b["fga"]  if _b["fga"]  > 0 else 0.0
+                    _arch_rows.append({
+                        "Defensive Archetype": _darch,
+                        "PPP": f"{_ppp:.3f}",
+                        "FG%": f"{_fg:.1%}",
+                        "Possessions": f"{_b['poss']:.0f}",
+                        "Games": _b["games"],
+                    })
+                _arch_rows.sort(key=lambda x: float(x["PPP"]), reverse=True)
+                if _arch_rows:
+                    st.dataframe(pd.DataFrame(_arch_rows), hide_index=True, use_container_width=True)
+
+            elif role_sel == "defense" and neighborhood:
+                st.markdown('<div class="section-header">Performance vs. Offensive Archetypes</div>', unsafe_allow_html=True)
+                _arch_buckets_d: dict = {}
+                for _row in neighborhood:
+                    _scr_id = _row.get("scorer_id")
+                    _scr_p  = graph.players.get(_scr_id) if _scr_id else None
+                    _oarch  = classify_offensive_archetype(_scr_p) if _scr_p else "Unknown"
+                    if _oarch not in _arch_buckets_d:
+                        _arch_buckets_d[_oarch] = {"poss": 0.0, "pts": 0.0, "fgm": 0.0, "fga": 0.0, "games": 0}
+                    _bd = _arch_buckets_d[_oarch]
+                    _bd["poss"]  += _row.get("possessions", 0)
+                    _bd["pts"]   += _row.get("points_allowed", 0)
+                    _bd["fgm"]   += (_row.get("fg_pct_allowed", 0) or 0) * (_row.get("possessions", 1))
+                    _bd["fga"]   += _row.get("possessions", 0)
+                    _bd["games"] += _row.get("games", 0)
+                _arch_rows_d = []
+                for _oarch, _bd in _arch_buckets_d.items():
+                    _ppp = _bd["pts"] / _bd["poss"] if _bd["poss"] > 0 else 0.0
+                    _fg  = _bd["fgm"] / _bd["fga"]  if _bd["fga"]  > 0 else 0.0
+                    _arch_rows_d.append({
+                        "Offensive Archetype": _oarch,
+                        "PPP Allowed": f"{_ppp:.3f}",
+                        "FG% Allowed": f"{_fg:.1%}",
+                        "Possessions": f"{_bd['poss']:.0f}",
+                        "Games": _bd["games"],
+                    })
+                _arch_rows_d.sort(key=lambda x: float(x["PPP Allowed"]))
+                if _arch_rows_d:
+                    st.dataframe(pd.DataFrame(_arch_rows_d), hide_index=True, use_container_width=True)
+
             # ---- Shot Zone Chart ----
             if pid:
                 st.markdown("---")
@@ -1772,7 +1843,7 @@ with tab5:
                             _zones = get_player_shot_zones(_pid, _season, st.session_state.get("season_type", "Regular Season"))
                             _off_hood = graph.get_offensive_neighborhood(_pname, top_n=8)
                             _def_hood = graph.get_defensive_neighborhood(_pname, top_n=8)
-                            _career_parts.append(fmt_current_season_context(player_obj, _zones, _off_hood, _def_hood))
+                            _career_parts.append(fmt_current_season_context(player_obj, _zones, _off_hood, _def_hood, graph=graph))
                             # Inject head coach for the player's own team
                             _player_team = (player_obj.team or "").strip()
                             if _player_team and _player_team not in _injected_team_coaches:
