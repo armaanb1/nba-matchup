@@ -360,19 +360,20 @@ def classify_defensive_archetype(player: "Player") -> str:
     if has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0):
         return "Anchor/Interior Big"
 
-    # 2. Mobile/Perimeter Big
-    if (has_C or has_F) and h >= 79 and not (has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0)):
+    # 2. Mobile/Perimeter Big — 6-8+ (80") required; 6-7 is a wing, not a big
+    if (has_C or has_F) and h >= 80 and not (has_C and h >= 81 and (bpg >= 1.2 or blk100 >= 3.0)):
         return "Mobile/Perimeter Big"
 
-    # 3. Helper/Rotator
-    if h >= 77 and (bpg >= 0.8 or blk100 >= 2.0 or spg >= 1.5 or stl100 >= 2.5) and not pos_upper.startswith("PG"):
+    # 3. Helper/Rotator — must be a non-guard big/wing; high-steal/block guards
+    # (Derrick White, Ausar Thompson) are perimeter stoppers, not rotators.
+    if h >= 77 and (bpg >= 0.8 or blk100 >= 2.0 or spg >= 1.5 or stl100 >= 2.5) and not has_G:
         return "Helper/Rotator"
 
-    # 4. Wing Stopper
-    if 77 <= h <= 81 and (has_F or "SF" in pos_upper or "PF" in pos_upper or "SMALL FORWARD" in pos_upper or "POWER FORWARD" in pos_upper):
+    # 4. Wing Stopper — forwards/wings 6-4 to 6-9
+    if 76 <= h <= 81 and (has_F or "SF" in pos_upper or "PF" in pos_upper or "SMALL FORWARD" in pos_upper or "POWER FORWARD" in pos_upper):
         return "Wing Stopper"
 
-    # 5. Chaser
+    # 5. Chaser — guards 6-2 to 6-7
     if 74 <= h <= 79 and (has_G or "SG" in pos_upper or "SF" in pos_upper or "SHOOTING GUARD" in pos_upper or "SMALL FORWARD" in pos_upper):
         return "Chaser"
 

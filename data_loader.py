@@ -1393,7 +1393,11 @@ def compute_defensive_classifier_inputs(graph: "MatchupGraph") -> Dict[int, Dict
             return arch_poss.get(label, 0.0) / total_poss
 
         dp = graph.players.get(def_id)
-        rim_proxy  = (dp.p_blk_100 or 0.0) if dp else 0.0
+        # Only count blocks as rim-protection for tall players (≥6-7 / 79").
+        # Guards with high block rates (Derrick White, Ausar Thompson) must not
+        # be routed to the Big Gate via this proxy.
+        _dp_h = (dp.height_inches or 0) if dp else 0
+        rim_proxy  = (dp.p_blk_100 or 0.0) if (dp and _dp_h >= 80) else 0.0
         help_proxy = ((dp.p_stl_100 or 0.0) + (dp.p_blk_100 or 0.0)) if dp else 0.0
 
         result[def_id] = {
