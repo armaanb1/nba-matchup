@@ -1213,65 +1213,102 @@ with tab2:
                 st.info(f"**Defensive Archetype:** {_def_arch}")
 
             # ---- Per-Archetype Performance Table ----
-            if role_sel == "offense" and neighborhood:
-                st.markdown('<div class="section-header">Performance vs. Defensive Archetypes</div>', unsafe_allow_html=True)
-                _arch_buckets: dict = {}
-                for _row in neighborhood:
-                    _def_id = _row.get("defender_id")
-                    _def_p  = graph.players.get(_def_id) if _def_id else None
-                    _darch  = classify_defensive_archetype(_def_p) if _def_p else "Unknown"
-                    if _darch not in _arch_buckets:
-                        _arch_buckets[_darch] = {"poss": 0.0, "pts": 0.0, "fgm": 0.0, "fga": 0.0, "games": 0}
-                    _b = _arch_buckets[_darch]
-                    _b["poss"]  += _row.get("possessions", 0)
-                    _b["pts"]   += _row.get("points", 0)
-                    _b["fgm"]   += (_row.get("fg_pct", 0) or 0) * (_row.get("possessions", 1))
-                    _b["fga"]   += _row.get("possessions", 0)
-                    _b["games"] += _row.get("games", 0)
-                _arch_rows = []
-                for _darch, _b in _arch_buckets.items():
-                    _ppp = _b["pts"] / _b["poss"] if _b["poss"] > 0 else 0.0
-                    _fg  = _b["fgm"] / _b["fga"]  if _b["fga"]  > 0 else 0.0
-                    _arch_rows.append({
-                        "Defensive Archetype": _darch,
-                        "PPP": f"{_ppp:.3f}",
-                        "FG%": f"{_fg:.1%}",
-                        "Possessions": f"{_b['poss']:.0f}",
-                        "Games": _b["games"],
-                    })
-                _arch_rows.sort(key=lambda x: float(x["PPP"]), reverse=True)
-                if _arch_rows:
-                    st.dataframe(pd.DataFrame(_arch_rows), hide_index=True, use_container_width=True)
+            # Uses the raw matchup CSV with NO possession minimum so every
+            # matchup edge (including sub-20-possession matchups) is counted.
+            # The graph is built with min_possessions=20 for edge quality, but
+            # that filter would drop ~10% of a player's total possessions and
+            # produce an artificially low point total (923 instead of 1,024).
+            _season_key = st.session_state.get("season", "2025-26")
+            _stype_key  = st.session_state.get("season_type", "Regular Season")
+            _raw_csv = CACHE_DIR / f"matchups_{_season_key.replace('-','_')}_{_stype_key.replace(' ','_')}.csv"
 
-            elif role_sel == "defense" and neighborhood:
+            if role_sel == "offense" and pid and _raw_csv.exists():
+                st.markdown('<div class="section-header">Performance vs. Defensive Archetypes</div>', unsafe_allow_html=True)
+                try:
+                    _raw_df = pd.read_csv(_raw_csv)
+                    _off_rows = _raw_df[_raw_df["OFF_PLAYER_ID"] == pid]
+                    _arch_buckets: dict = {}
+                    for _, _mr in _off_rows.iterrows():
+                        _def_id = int(_mr["DEF_PLAYER_ID"])
+                        _def_p  = graph.players.get(_def_id)
+                        _darch  = classify_defensive_archetype(_def_p) if _def_p else "Other"
+                        _poss   = float(_mr.get("PARTIAL_POSS") or 0)
+                        _pts    = float(_mr.get("PLAYER_PTS") or 0)
+                        _fgm    = float(_mr.get("MATCHUP_FGM") or 0)
+                        _fga    = float(_mr.get("MATCHUP_FGA") or 0)
+                        _gp     = int(_mr.get("GP") or 0)
+                        if _poss <= 0:
+                            continue
+                        _b = _arch_buckets.setdefault(_darch, {"poss": 0.0, "pts": 0.0, "fgm": 0.0, "fga": 0.0, "games": 0})
+                        _b["poss"]  += _poss
+                        _b["pts"]   += _pts
+                        _b["fgm"]   += _fgm
+                        _b["fga"]   += _fga
+                        _b["games"] += _gp
+                    _total_pts  = sum(_b["pts"]  for _b in _arch_buckets.values())
+                    _total_poss = sum(_b["poss"] for _b in _arch_buckets.values())
+                    _arch_rows = []
+                    for _darch, _b in _arch_buckets.items():
+                        _ppp = _b["pts"] / _b["poss"] if _b["poss"] > 0 else 0.0
+                        _fg  = _b["fgm"] / _b["fga"]  if _b["fga"]  > 0 else 0.0
+                        _arch_rows.append({
+                            "Defensive Archetype": _darch,
+                            "PPP": f"{_ppp:.3f}",
+                            "FG%": f"{_fg:.1%}",
+                            "Points": f"{_b['pts']:.0f}",
+                            "Possessions": f"{_b['poss']:.0f}",
+                            "Games": _b["games"],
+                        })
+                    _arch_rows.sort(key=lambda x: float(x["PPP"]), reverse=True)
+                    if _arch_rows:
+                        st.dataframe(pd.DataFrame(_arch_rows), hide_index=True, use_container_width=True)
+                        st.caption(f"Total from all matchups: {_total_pts:.0f} pts across {_total_poss:.0f} possessions (full-season, no possession minimum)")
+                except Exception as _e:
+                    st.warning(f"Could not load full matchup data: {_e}")
+
+            elif role_sel == "defense" and pid and _raw_csv.exists():
                 st.markdown('<div class="section-header">Performance vs. Offensive Archetypes</div>', unsafe_allow_html=True)
-                _arch_buckets_d: dict = {}
-                for _row in neighborhood:
-                    _scr_id = _row.get("scorer_id")
-                    _scr_p  = graph.players.get(_scr_id) if _scr_id else None
-                    _oarch  = classify_offensive_archetype(_scr_p) if _scr_p else "Unknown"
-                    if _oarch not in _arch_buckets_d:
-                        _arch_buckets_d[_oarch] = {"poss": 0.0, "pts": 0.0, "fgm": 0.0, "fga": 0.0, "games": 0}
-                    _bd = _arch_buckets_d[_oarch]
-                    _bd["poss"]  += _row.get("possessions", 0)
-                    _bd["pts"]   += _row.get("points_allowed", 0)
-                    _bd["fgm"]   += (_row.get("fg_pct_allowed", 0) or 0) * (_row.get("possessions", 1))
-                    _bd["fga"]   += _row.get("possessions", 0)
-                    _bd["games"] += _row.get("games", 0)
-                _arch_rows_d = []
-                for _oarch, _bd in _arch_buckets_d.items():
-                    _ppp = _bd["pts"] / _bd["poss"] if _bd["poss"] > 0 else 0.0
-                    _fg  = _bd["fgm"] / _bd["fga"]  if _bd["fga"]  > 0 else 0.0
-                    _arch_rows_d.append({
-                        "Offensive Archetype": _oarch,
-                        "PPP Allowed": f"{_ppp:.3f}",
-                        "FG% Allowed": f"{_fg:.1%}",
-                        "Possessions": f"{_bd['poss']:.0f}",
-                        "Games": _bd["games"],
-                    })
-                _arch_rows_d.sort(key=lambda x: float(x["PPP Allowed"]))
-                if _arch_rows_d:
-                    st.dataframe(pd.DataFrame(_arch_rows_d), hide_index=True, use_container_width=True)
+                try:
+                    _raw_df = pd.read_csv(_raw_csv)
+                    _def_rows = _raw_df[_raw_df["DEF_PLAYER_ID"] == pid]
+                    _arch_buckets_d: dict = {}
+                    for _, _mr in _def_rows.iterrows():
+                        _scr_id = int(_mr["OFF_PLAYER_ID"])
+                        _scr_p  = graph.players.get(_scr_id)
+                        _oarch  = classify_offensive_archetype(_scr_p) if _scr_p else "Other"
+                        _poss   = float(_mr.get("PARTIAL_POSS") or 0)
+                        _pts    = float(_mr.get("PLAYER_PTS") or 0)
+                        _fgm    = float(_mr.get("MATCHUP_FGM") or 0)
+                        _fga    = float(_mr.get("MATCHUP_FGA") or 0)
+                        _gp     = int(_mr.get("GP") or 0)
+                        if _poss <= 0:
+                            continue
+                        _bd = _arch_buckets_d.setdefault(_oarch, {"poss": 0.0, "pts": 0.0, "fgm": 0.0, "fga": 0.0, "games": 0})
+                        _bd["poss"]  += _poss
+                        _bd["pts"]   += _pts
+                        _bd["fgm"]   += _fgm
+                        _bd["fga"]   += _fga
+                        _bd["games"] += _gp
+                    _total_pts_d  = sum(_b["pts"]  for _b in _arch_buckets_d.values())
+                    _total_poss_d = sum(_b["poss"] for _b in _arch_buckets_d.values())
+                    _arch_rows_d = []
+                    for _oarch, _bd in _arch_buckets_d.items():
+                        _ppp = _bd["pts"] / _bd["poss"] if _bd["poss"] > 0 else 0.0
+                        _fg  = _bd["fgm"] / _bd["fga"]  if _bd["fga"]  > 0 else 0.0
+                        _arch_rows_d.append({
+                            "Offensive Archetype": _oarch,
+                            "PPP Allowed": f"{_ppp:.3f}",
+                            "FG% Allowed": f"{_fg:.1%}",
+                            "Pts Allowed": f"{_bd['pts']:.0f}",
+                            "Possessions": f"{_bd['poss']:.0f}",
+                            "Games": _bd["games"],
+                        })
+                    _arch_rows_d.sort(key=lambda x: float(x["PPP Allowed"]))
+                    if _arch_rows_d:
+                        st.dataframe(pd.DataFrame(_arch_rows_d), hide_index=True, use_container_width=True)
+                        st.caption(f"Total from all matchups: {_total_pts_d:.0f} pts allowed across {_total_poss_d:.0f} possessions (full-season, no possession minimum)")
+                except Exception as _e:
+                    st.warning(f"Could not load full matchup data: {_e}")
 
             # ---- Shot Zone Chart ----
             if pid:

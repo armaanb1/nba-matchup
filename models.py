@@ -472,13 +472,16 @@ def classify_defensive_archetype(player: "Player") -> str:
     if is_guard or (has_G and h >= 77):
         return "Chaser"
 
-    # 6. Wing Stopper: forward who can guard multiple positions on the perimeter
+    # 7. Helper first for high-block non-guards: rim protectors and secondary
+    # shot-blockers who clog lanes rather than guard ball-handlers on the wing.
+    # blk100 >= 1.8 separates true helper/rim-coverage roles (Isaac, Jackson,
+    # Gueye, Bona) from perimeter stoppers (Bridges, Thompson).
+    if h >= 77 and blk100 >= 1.8 and not is_guard:
+        return "Helper"
+
+    # 6. Wing Stopper: perimeter-defending forward (low block activity)
     if 77 <= h <= 82 and has_F and not has_G:
         return "Wing Stopper"
-
-    # 7. Helper: tall non-guard with secondary rim coverage
-    if h >= 77 and blk100 >= 2.0 and not is_guard:
-        return "Helper"
 
     # Default by position
     if has_C:

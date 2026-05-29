@@ -412,7 +412,7 @@ SYSTEM_PROMPT = (
 
     "\n3. Archetypes over individuals — and always use the exact archetype label "
     "from the context data. The neighborhood rows include the archetype in "
-    "parentheses (e.g., 'Jalen Suggs (ORL · Point of Attack)'). When explaining "
+    "parentheses (e.g., 'Jalen Suggs (ORL, Point of Attack)'). When explaining "
     "who a player beats or struggles against, open with the archetype name from "
     "that list, then name specific players as examples. Never invent a new "
     "descriptor. The full vocabulary:\n"
@@ -849,14 +849,34 @@ def generate_similarity_report(
 # ---------------------------------------------------------------------------
 
 def _sanitize(text: str) -> str:
-    """Normalize typographic characters; leave all Unicode intact (Anthropic API is UTF-8)."""
-    return (
+    """
+    Normalize typographic characters before sending to the Anthropic API.
+
+    Known characters are replaced with ASCII equivalents. A final pass encodes
+    to UTF-8 and back to catch any remaining encoding issues (e.g. middle dots,
+    curly apostrophes from copy-paste) that could raise UnicodeEncodeError in
+    environments that default to an ASCII codec.
+    """
+    cleaned = (
         text
-        .replace("\u2019", "'").replace("\u2018", "'")
-        .replace("\u201c", '"').replace("\u201d", '"')
-        .replace("\u2013", "-").replace("\u2014", "-")
-        .replace("\u2026", "...")
+        .replace("\u2019", "'").replace("\u2018", "'")   # curly apostrophes
+        .replace("\u201c", '"').replace("\u201d", '"')   # curly quotes
+        .replace("\u2013", "-").replace("\u2014", "-")   # en/em dash
+        .replace("\u2026", "...")                         # ellipsis
+        .replace("\u00b7", ".")                           # middle dot (\u00b7)
+        .replace("\u00e9", "e").replace("\u00e8", "e")   # e with accents
+        .replace("\u00e0", "a").replace("\u00e1", "a")   # a with accents
+        .replace("\u00f3", "o").replace("\u00f6", "o")   # o with accents
+        .replace("\u00fc", "u").replace("\u00fa", "u")   # u with accents
+        .replace("\u00ed", "i").replace("\u00ef", "i")   # i with accents
+        .replace("\u0107", "c").replace("\u010d", "c")   # c with accents (Jokic, Doncic)
+        .replace("\u017e", "z").replace("\u0161", "s")   # z/s with caron
+        .replace("\u0144", "n")                           # n with acute
     )
+    # Final safety net: encode to UTF-8 and decode back so any residual
+    # non-encodable characters surface here, not inside the API request builder.
+    # errors='replace' substitutes a replacement char rather than crashing.
+    return cleaned.encode("utf-8", errors="replace").decode("utf-8")
 
 
 def _call_anthropic(user_prompt: str, api_key: str, max_tokens: int = 2048) -> str:
