@@ -817,7 +817,7 @@ class MatchupGraph:
                 "defender_team": defender.team if defender else None,
                 "defender_pos": defender.position if defender else None,
                 "defender_archetype": (
-                    defender.def_role.value if defender and defender.def_role else None
+                    classify_defensive_archetype(defender) if defender else None
                 ),
                 "ppp": edge.points_per_possession,
                 "possessions": edge.possessions,
@@ -852,7 +852,7 @@ class MatchupGraph:
                 "scorer_team": scorer.team if scorer else None,
                 "scorer_pos": scorer.position if scorer else None,
                 "scorer_archetype": (
-                    scorer.off_archetype.value if scorer and scorer.off_archetype else None
+                    classify_offensive_archetype(scorer) if scorer else None
                 ),
                 "ppp_allowed": edge.points_per_possession,
                 "possessions": edge.possessions,
@@ -1035,7 +1035,7 @@ class MatchupGraph:
                 "defender": op.name if op else str(other_id),
                 "team": op.team if op else "—",
                 "position": op.position if op else "—",
-                "archetype": op.def_role.value if op and op.def_role else None,
+                "archetype": classify_defensive_archetype(op) if op else None,
                 "combined_score": mps_def,
                 "mps_def": mps_def,
                 "jaccard": jaccard,
@@ -1165,7 +1165,7 @@ class MatchupGraph:
                 "scorer": op.name if op else str(other_id),
                 "team": op.team if op else "—",
                 "position": op.position if op else "—",
-                "archetype": op.off_archetype.value if op and op.off_archetype else None,
+                "archetype": classify_offensive_archetype(op) if op else None,
                 "combined_score": mps_off,
                 "mps_off": mps_off,
                 "jaccard": jaccard,
