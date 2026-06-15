@@ -1195,6 +1195,7 @@ def scrape_synergy_to_db(
             return existing
 
     raw_poss: Dict[int, Dict[str, float]] = {}
+    player_names: Dict[int, str] = {}
 
     for play_type, freq_key in _SYNERGY_PLAY_TYPES.items():
         try:
@@ -1218,6 +1219,10 @@ def scrape_synergy_to_db(
                 poss = _safe_float(row.get("POSS")) or 0.0
                 if pid is not None and poss > 0:
                     raw_poss.setdefault(pid, {})[freq_key] = poss
+                    if pid not in player_names:
+                        name = row.get("PLAYER_NAME") or ""
+                        if name:
+                            player_names[pid] = str(name)
             print(f"  Synergy: {play_type} — {len(df)} rows")
         except Exception as e:
             print(f"  Synergy: {play_type} failed: {e}")
@@ -1232,6 +1237,8 @@ def scrape_synergy_to_db(
         entry: Dict = {"scoring_possessions": total}
         for fk, p in poss_dict.items():
             entry[fk] = p / total if total > 0 else 0.0
+        if pid in player_names:
+            entry["name"] = player_names[pid]
         combined[pid] = entry
 
     upsert_synergy_playtypes(combined, season)
@@ -1290,6 +1297,10 @@ def scrape_tracking_to_db(
                 val = _safe_float(row.get(col_name))
                 if pid is not None and val is not None:
                     result.setdefault(pid, {})[out_key] = val
+                    if "name" not in result.get(pid, {}):
+                        name = row.get("PLAYER_NAME") or ""
+                        if name:
+                            result.setdefault(pid, {})["name"] = str(name)
             print(f"  Tracking: {pt_type} — {len(df)} rows")
         except Exception as e:
             print(f"  Tracking: {pt_type} failed: {e}")
@@ -1469,6 +1480,7 @@ def run_archetype_classification(
                 player.off_archetype.value if player.off_archetype else None,
                 player.def_role.value if player.def_role else None,
                 _season,
+                name=player.name,
             )
         _cb("Done.", 1.0)
         return summary
@@ -1476,6 +1488,23 @@ def run_archetype_classification(
     # ── 2. Tracking data ──────────────────────────────────────────────────────
     _cb("Loading tracking data from DB (scraping if needed)…", 0.30)
     tracking = scrape_tracking_to_db(season, season_type, force_refresh)
+
+    # ── 2b. Attach synergy + tracking data to Player objects ──────────────────
+    for pid, player in graph.players.items():
+        s = synergy.get(pid, {})
+        t = tracking.get(pid, {})
+        player.scoring_possessions = s.get("scoring_possessions")
+        player.pnr_bh_freq        = s.get("pnr_bh_freq")
+        player.iso_freq           = s.get("iso_freq")
+        player.post_freq          = s.get("post_freq")
+        player.roll_freq          = s.get("roll_freq")
+        player.spot_freq          = s.get("spot_freq")
+        player.off_screen_freq    = s.get("off_screen_freq")
+        player.handoff_freq       = s.get("handoff_freq")
+        player.cut_freq           = s.get("cut_freq")
+        player.putback_freq       = s.get("putback_freq")
+        player.drives_pg          = t.get("drives_pg")
+        player.paint_touches_pg   = t.get("paint_touches_pg")
 
     # ── 3. Build scorer stats pool and classify ────────────────────────────────
     _cb("Building offensive classifier inputs…", 0.45)
@@ -1552,6 +1581,7 @@ def run_archetype_classification(
             player.off_archetype.value if player.off_archetype else None,
             player.def_role.value if player.def_role else None,
             season,
+            name=player.name,
         )
 
     _cb("Done.", 1.0)

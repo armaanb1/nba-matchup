@@ -555,6 +555,22 @@ class Player:
     p_fgpct_rim: Optional[float] = None
     p_fgpct_mid: Optional[float] = None
 
+    # Synergy play-type frequencies (from NBA Synergy API)
+    scoring_possessions: Optional[float] = None
+    pnr_bh_freq: Optional[float] = None
+    iso_freq: Optional[float] = None
+    post_freq: Optional[float] = None
+    roll_freq: Optional[float] = None
+    spot_freq: Optional[float] = None
+    off_screen_freq: Optional[float] = None
+    handoff_freq: Optional[float] = None
+    cut_freq: Optional[float] = None
+    putback_freq: Optional[float] = None
+
+    # Tracking stats (from NBA tracking API)
+    drives_pg: Optional[float] = None
+    paint_touches_pg: Optional[float] = None
+
     # Matchup-derived (computed from graph)
     avg_ppp_off: Optional[float] = None   # avg PPP scored on offense
     avg_ppp_def: Optional[float] = None   # avg PPP allowed on defense

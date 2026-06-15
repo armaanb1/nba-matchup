@@ -68,6 +68,51 @@ CONCEPT_PATTERNS: List[Tuple[str, List[str]]] = [
     ("efficiency",   ["efficient", "efficiency", "true shooting", "ts%", "best value"]),
 ]
 
+# ---------------------------------------------------------------------------
+# Player archetype concepts — offensive and defensive archetype names
+# (assigned per-player in player_archetypes / NBA_Players_archetypes_final.csv)
+# ---------------------------------------------------------------------------
+
+OFFENSIVE_ARCHETYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
+    ("Shot Creator",           ["shot creator", "shot creators"]),
+    ("Primary Ball Handler",   ["primary ball handler", "primary ball handlers", "primary playmaker", "primary playmakers"]),
+    ("Secondary Ball Handler", ["secondary ball handler", "secondary ball handlers", "secondary playmaker", "secondary playmakers"]),
+    ("Slasher",                ["slasher", "slashers"]),
+    ("Off Screen Shooter",     ["off-screen shooter", "off screen shooter", "off-screen shooters", "off screen shooters"]),
+    ("Movement Shooter",       ["movement shooter", "movement shooters"]),
+    ("Stationary Shooter",     ["stationary shooter", "stationary shooters", "spot-up shooter", "spot up shooter", "spot-up shooters", "spot up shooters"]),
+    ("Athletic Finisher",      ["athletic finisher", "athletic finishers", "rim finisher", "rim finishers"]),
+    ("Versatile Big",          ["versatile big", "versatile bigs"]),
+    ("Stretch Big",            ["stretch big", "stretch bigs", "stretch five", "stretch fives"]),
+    ("Post Scorer",            ["post scorer", "post scorers", "post-up scorer", "post-up scorers"]),
+    ("Roll & Cut Big",         ["roll and cut big", "roll & cut big", "roll-and-cut big", "rim runner", "rim runners", "lob threat"]),
+]
+
+DEFENSIVE_ARCHETYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
+    ("Point of Attack", ["point of attack defender", "point-of-attack defender", "point of attack defenders",
+                          "on-ball defender", "on ball defender", "on-ball defenders"]),
+    ("Wing Stopper",     ["wing stopper", "wing stoppers", "wing defender", "wing defenders"]),
+    ("Chaser",           ["chaser defender", "chaser defenders", "shooter chaser", "shooter chasers"]),
+    ("Helper",           ["help defender", "help defenders", "helper defender", "rim helper", "rim helpers"]),
+    ("Anchor Big",       ["anchor big", "anchor bigs", "rim protector", "rim protectors"]),
+    ("Mobile Big",       ["mobile big", "mobile bigs", "switchable big", "switchable bigs"]),
+    ("Low Activity",     ["low activity defender", "low-activity defender", "low activity defenders",
+                          "worst defenders", "weakest defenders", "hidden on defense"]),
+]
+
+# concept key -> ("off" | "def", archetype value)
+ARCHETYPE_CONCEPT_MAP: Dict[str, Tuple[str, str]] = {}
+
+ARCHETYPE_PATTERNS: List[Tuple[str, List[str]]] = []
+for _arch_value, _kws in OFFENSIVE_ARCHETYPE_KEYWORDS:
+    _key = f"{_arch_value} archetype"
+    ARCHETYPE_CONCEPT_MAP[_key] = ("off", _arch_value)
+    ARCHETYPE_PATTERNS.append((_key, _kws))
+for _arch_value, _kws in DEFENSIVE_ARCHETYPE_KEYWORDS:
+    _key = f"{_arch_value} archetype"
+    ARCHETYPE_CONCEPT_MAP[_key] = ("def", _arch_value)
+    ARCHETYPE_PATTERNS.append((_key, _kws))
+
 
 def detect_teams(question: str) -> List[str]:
     """Return normalised team names mentioned in the question."""
@@ -84,10 +129,10 @@ def detect_teams(question: str) -> List[str]:
 
 
 def detect_concepts(question: str) -> List[str]:
-    """Return concept keys mentioned in the question."""
+    """Return concept keys mentioned in the question (awards/situational + archetypes)."""
     q = question.lower()
     found = []
-    for concept, keywords in CONCEPT_PATTERNS:
+    for concept, keywords in CONCEPT_PATTERNS + ARCHETYPE_PATTERNS:
         if any(kw in q for kw in keywords):
             if concept not in found:
                 found.append(concept)
@@ -111,7 +156,23 @@ def resolve_concept_players(concept: str, graph, career_dfs: Dict) -> List:
     """
     all_players = list(graph.players.values())
 
-    if concept == "mvp":
+    if concept in ARCHETYPE_CONCEPT_MAP:
+        role, arch_value = ARCHETYPE_CONCEPT_MAP[concept]
+        if role == "off":
+            candidates = [
+                p for p in all_players
+                if p.off_archetype and p.off_archetype.value == arch_value
+            ]
+            candidates.sort(key=lambda p: p.ppg or 0, reverse=True)
+        else:
+            candidates = [
+                p for p in all_players
+                if p.def_role and p.def_role.value == arch_value
+            ]
+            candidates.sort(key=lambda p: p.epm_def if p.epm_def is not None else -99.0, reverse=True)
+        return candidates[:10]
+
+    elif concept == "mvp":
         # Top players by PPG + net rating
         candidates = [p for p in all_players if p.ppg and p.ppg >= 20]
         candidates.sort(key=lambda p: (p.ppg or 0) + (p.net_rating or 0) * 0.5, reverse=True)
@@ -202,7 +263,7 @@ def fmt_player_compact(player, career_df: Optional[pd.DataFrame] = None) -> str:
                 delta = curr["ppg"] - b_ppg
                 parts.append(f"PPG vs career baseline: {delta:+.1f} ({b_ppg:.1f} → {curr['ppg']:.1f})")
 
-    off_arch = classify_offensive_archetype(player)
-    def_arch = classify_defensive_archetype(player)
+    off_arch = player.off_archetype.value if player.off_archetype else classify_offensive_archetype(player)
+    def_arch = player.def_role.value if player.def_role else classify_defensive_archetype(player)
     parts.append(f"Off. archetype: {off_arch} | Def. archetype: {def_arch}")
     return " | ".join(parts)

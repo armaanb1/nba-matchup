@@ -391,7 +391,7 @@ def _save_archetypes_to_db(g: MatchupGraph, season: str) -> None:
         for pid, player in g.players.items():
             off = player.off_archetype.value if player.off_archetype else None
             def_ = player.def_role.value if player.def_role else None
-            upsert_archetypes(pid, off, def_, season)
+            upsert_archetypes(pid, off, def_, season, name=player.name)
     except Exception:
         pass
 
@@ -1533,15 +1533,8 @@ with tab4:
         "All classifications emerge from statistics — no player names are hardcoded."
     )
 
-    _OFFENSIVE_ARCHETYPE_LIST = [
-        "Primary Ball Handler", "Shot Creator", "Spot-Up Shooter",
-        "Slasher", "Versatile Scorer", "Roll & Cut Big",
-        "Post Scorer", "Low-Usage Role Player",
-    ]
-    _DEFENSIVE_ARCHETYPE_LIST = [
-        "Point of Attack", "Wing Stopper", "Chaser",
-        "Helper", "Anchor Big", "Mobile Big", "Low Activity",
-    ]
+    _OFFENSIVE_ARCHETYPE_LIST = [a.value for a in OffensiveArchetype]
+    _DEFENSIVE_ARCHETYPE_LIST = [d.value for d in DefensiveRole]
 
     _ab_left, _ab_right = st.columns(2)
 
@@ -1555,7 +1548,7 @@ with tab4:
         if _off_arch_sel:
             _arch_players = sorted(
                 [p for p in graph.players.values()
-                 if classify_offensive_archetype(p) == _off_arch_sel and p.ppg],
+                 if p.off_archetype and p.off_archetype.value == _off_arch_sel and p.ppg],
                 key=lambda p: p.ppg or 0, reverse=True,
             )
             st.caption(f"{len(_arch_players)} players classified as {_off_arch_sel}")
@@ -1564,19 +1557,24 @@ with tab4:
                 for _ap in _arch_players:
                     _r = {"Player": _ap.name, "Team": _ap.team or "—",
                           "Position": _ap.position or "—", "Height": _ap.height or "—"}
-                    if _off_arch_sel == "Primary Ball Handler":
+                    if _off_arch_sel in ("Primary Ball Handler", "Secondary Ball Handler"):
                         _r.update({"PPG": f"{_ap.ppg:.1f}" if _ap.ppg else "—",
                                    "APG": f"{_ap.apg:.1f}" if _ap.apg else "—",
                                    "AST%": f"{_ap.ast_pct:.1%}" if _ap.ast_pct else "—",
                                    "USG%": f"{_ap.usg_pct:.1%}" if _ap.usg_pct else "—"})
-                    elif _off_arch_sel in ("Slasher", "Roll & Cut Big"):
+                    elif _off_arch_sel in ("Slasher", "Athletic Finisher", "Roll & Cut Big"):
                         _r.update({"PPG": f"{_ap.ppg:.1f}" if _ap.ppg else "—",
                                    "Rim FGA/100": f"{_ap.p_fga_rim_100:.1f}" if _ap.p_fga_rim_100 else "—",
                                    "Rim FG%": f"{_ap.p_fgpct_rim:.1%}" if _ap.p_fgpct_rim else "—"})
-                    elif _off_arch_sel == "Spot-Up Shooter":
+                    elif _off_arch_sel in ("Off Screen Shooter", "Movement Shooter", "Stationary Shooter"):
                         _r.update({"3PA/100": f"{_ap.p_fg3a_100:.1f}" if _ap.p_fg3a_100 else "—",
                                    "3P%": f"{_ap.fg3_pct:.1%}" if _ap.fg3_pct else "—",
                                    "USG%": f"{_ap.usg_pct:.1%}" if _ap.usg_pct else "—"})
+                    elif _off_arch_sel in ("Versatile Big", "Stretch Big"):
+                        _r.update({"PPG": f"{_ap.ppg:.1f}" if _ap.ppg else "—",
+                                   "3PA/100": f"{_ap.p_fg3a_100:.1f}" if _ap.p_fg3a_100 else "—",
+                                   "Mid FGA/100": f"{_ap.p_fga_mid_100:.1f}" if _ap.p_fga_mid_100 else "—",
+                                   "Rim FGA/100": f"{_ap.p_fga_rim_100:.1f}" if _ap.p_fga_rim_100 else "—"})
                     elif _off_arch_sel == "Post Scorer":
                         _r.update({"PPG": f"{_ap.ppg:.1f}" if _ap.ppg else "—",
                                    "Mid FGA/100": f"{_ap.p_fga_mid_100:.1f}" if _ap.p_fga_mid_100 else "—",
@@ -1598,8 +1596,8 @@ with tab4:
         if _def_arch_sel:
             _role_players = sorted(
                 [p for p in graph.players.values()
-                 if classify_defensive_archetype(p) == _def_arch_sel],
-                key=lambda p: p.epm_def or 0, reverse=True,
+                 if p.def_role and p.def_role.value == _def_arch_sel],
+                key=lambda p: p.epm_def if p.epm_def is not None else -99.0, reverse=True,
             )
             st.caption(f"{len(_role_players)} players classified as {_def_arch_sel}")
             if _role_players:
@@ -1607,15 +1605,15 @@ with tab4:
                 for _rp in _role_players:
                     _r = {"Player": _rp.name, "Team": _rp.team or "—",
                           "Position": _rp.position or "—", "Height": _rp.height or "—"}
-                    if _def_arch_sel in ("Anchor/Interior Big", "Mobile/Perimeter Big"):
+                    if _def_arch_sel in ("Anchor Big", "Mobile Big"):
                         _r.update({"BLK/100": f"{_rp.p_blk_100:.1f}" if _rp.p_blk_100 else "—",
                                    "DRB/100": f"{_rp.p_drb_100:.1f}" if _rp.p_drb_100 else "—",
                                    "DEPM": f"{_rp.epm_def:.2f}" if _rp.epm_def else "—"})
-                    elif _def_arch_sel == "Helper/Rotator":
+                    elif _def_arch_sel == "Helper":
                         _r.update({"BLK/100": f"{_rp.p_blk_100:.1f}" if _rp.p_blk_100 else "—",
                                    "STL/100": f"{_rp.p_stl_100:.1f}" if _rp.p_stl_100 else "—",
                                    "DEPM": f"{_rp.epm_def:.2f}" if _rp.epm_def else "—"})
-                    elif _def_arch_sel in ("Point-of-Attack Defender", "Chaser"):
+                    elif _def_arch_sel in ("Point of Attack", "Chaser", "Wing Stopper"):
                         _r.update({"STL/100": f"{_rp.p_stl_100:.1f}" if _rp.p_stl_100 else "—",
                                    "PPP Allowed": f"{_rp.avg_ppp_def:.3f}" if _rp.avg_ppp_def else "—",
                                    "DEPM": f"{_rp.epm_def:.2f}" if _rp.epm_def else "—"})
